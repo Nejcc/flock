@@ -25,12 +25,14 @@ func init() {
 	windowsDNSPort = ln.LocalAddr().(*net.UDPAddr).Port
 	_ = ln.Close()
 
-	// The real /etc/resolver points at the real daemon, never at a test daemon's port.
+	// The real /etc/resolver and systemd-resolved drop-in point at the real daemon, never at a
+	// test daemon's port.
 	dir, err := os.MkdirTemp("", "flock-resolver-")
 	if err != nil {
 		panic(err)
 	}
 	dns.ResolverDir = dir
+	dns.ResolvedDir = dir
 }
 
 func waitStatus(t *testing.T, client *api.Client, ok func(api.Status) bool) api.Status {
@@ -110,11 +112,17 @@ func TestWildcardCheckReportsWhyItDoesNotWork(t *testing.T) {
 	client := startDaemon(t, root)
 
 	st := waitStatus(t, client, func(st api.Status) bool { return st.DNS.Wildcard || st.DNS.WildcardProblem != "" })
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS != "darwin" {
 		// Lookups never reach the test daemon's DNS server.
 		if st.DNS.Wildcard || st.DNS.WildcardProblem == "" {
 			t.Fatalf("want a problem, got %+v", st.DNS)
 		}
+		if runtime.GOOS == "windows" {
+			return
+		}
+		// Linux: they do once systemd-resolved (or another resolver) sends them to Flock.
+		arrives.Store(true)
+		reloadUntil(t, client, func(st api.Status) bool { return st.DNS.Wildcard && st.DNS.WildcardProblem == "" })
 		return
 	}
 
