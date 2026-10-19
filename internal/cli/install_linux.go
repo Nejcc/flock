@@ -304,18 +304,33 @@ func runPrivileged(cmd *cobra.Command, exe string, args ...string) error {
 	switch {
 	case os.Geteuid() == 0:
 		run = exec.Command(exe, args...)
-	case !term.IsTerminal(int(os.Stdin.Fd())):
-		if _, err := exec.LookPath("pkexec"); err == nil {
-			run = exec.Command("pkexec", append([]string{exe}, args...)...)
-		}
+	case usePkexec():
+		run = exec.Command("pkexec", append([]string{exe}, args...)...)
 	}
 	run.Stdin, run.Stdout, run.Stderr = os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()
 	err := run.Run()
-	// 126: pkexec's dialog was dismissed, or the user isn't allowed to authenticate.
-	if exit, ok := errors.AsType[*exec.ExitError](err); ok && run.Args[0] == "pkexec" && exit.ExitCode() == 126 {
-		return errDeclined
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok && run.Args[0] == "pkexec" {
+		switch exit.ExitCode() {
+		case 126: // the dialog was dismissed, or the user isn't allowed to authenticate
+			return errDeclined
+		case 127:
+			return errors.New("no polkit authentication agent is running to ask for the administrator password")
+		}
 	}
 	return err
+}
+
+// usePkexec reports whether the password should be asked in the desktop's dialog: no terminal,
+// a graphical session, and a sudo that would need a password. ssh -T, Ansible and CI (no
+// display, or NOPASSWD sudo) keep using sudo, as they have no polkit agent to answer pkexec.
+func usePkexec() bool {
+	if term.IsTerminal(int(os.Stdin.Fd())) || os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DISPLAY") == "" {
+		return false
+	}
+	if _, err := exec.LookPath("pkexec"); err != nil {
+		return false
+	}
+	return exec.Command("sudo", "-n", "true").Run() != nil
 }
 
 // systemTrusts reports whether the system's trust store has the CA, the way Go, curl and PHP see it.
