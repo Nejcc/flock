@@ -2,7 +2,7 @@
 // make default, update npm and uninstall. An install runs within its request, so the row shows what
 // it waits for until the daemon answers. Exact versions a project pins (.nvmrc) are offered by
 // `node` in the terminal instead.
-import { api, ago, h } from "../app.js";
+import { api, ago, ask, h, takeLink } from "../app.js";
 import { icon } from "../icons.js";
 
 let versions = null; // GET /v1/node/versions
@@ -10,6 +10,12 @@ let error = "";
 let checking = false;
 const busy = new Map(); // major → what its row shows while a request runs
 let installingDefault = null;
+
+// A flock://install link to a version this Flock can't install.
+const NO_BUILD = "There's no build of it for this computer, or the link is meant for a newer Flock.";
+const newest = (list, key) => list.filter((v) => v.latest).sort((a, b) =>
+  b[key].localeCompare(a[key], undefined, { numeric: true }))[0];
+let asking = false;
 let loadedAt = 0;
 let root = null;
 
@@ -44,6 +50,26 @@ async function run(ctx, major, step, fn) {
   await ctx.act(async () => { versions = (await fn()) || versions; });
   busy.delete(major);
   ctx.rerender();
+}
+
+// Asks about a pending flock://install/node link (links.go) once the versions are loaded: nothing
+// installs until the user confirms. Without a version, the newest line.
+async function askLink(ctx, defaultInstalling) {
+  if (asking) return;
+  asking = true;
+  try {
+    const l = await takeLink("node");
+    if (!l) return;
+    const v = l.line ? versions.versions.find((x) => x.major === l.line) : newest(versions.versions, "major");
+    if (!v || (!v.installed && !v.latest)) return await ask(`Flock doesn't offer Node.js ${l.line || ""}`.trim(), NO_BUILD, "OK");
+    if (v.installed) return await ask(`Node.js ${v.major} is already installed`, "You'll find it in Settings → Node.", "OK");
+    if (busy.has(v.major) || v.major === defaultInstalling) return await ask(`Node.js ${v.major} is already being installed`, "Settings → Node shows how far it is.", "OK");
+    if (await ask(`Install Node.js ${v.major}?`, `A link asked Flock to install Node.js ${v.latest}. Projects that use it get node, npm and npx as soon as it's installed.`, "Install")) {
+      run(ctx, v.major, `Downloading Node.js ${v.latest}…`, () => api(`/v1/node/versions/${v.major}/install`, { method: "POST" }));
+    }
+  } finally {
+    asking = false;
+  }
 }
 
 function row(ctx, v, defaultInstalling) {
@@ -108,6 +134,7 @@ export default {
       root.append(h("div", { class: "empty" }, error || "Loading Node.js versions…"));
       return root;
     }
+    askLink(ctx, defaultInstalling);
 
     const check = h("button", { class: "link", disabled: checking, onclick: async () => {
       checking = true;

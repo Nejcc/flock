@@ -117,9 +117,9 @@ function renderStopped(installed, message) {
   if (!installed) {
     $("headline").textContent = "Not set up";
     $("content").replaceChildren(h("section", {},
-      h("p", {}, "Flock isn't set up for your user yet. In a terminal, run:"),
-      h("pre", { class: "mono" }, "flock-php install"),
-      h("p", { class: "muted" }, "It asks for your password once, for .test DNS, the HTTPS certificate authority and ports 80 and 443.")));
+      h("p", {}, "Flock isn't set up for your user yet."),
+      h("p", { class: "muted" }, "Setting it up asks for your password once, for .test DNS, the HTTPS certificate authority and ports 80 and 443."),
+      h("button", { class: "primary", onclick: () => openWindow("setup") }, "Set Up Flock…")));
     return;
   }
   $("headline").textContent = "Not running";

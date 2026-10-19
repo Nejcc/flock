@@ -1,14 +1,30 @@
 // Settings → Services: the services grouped by category on the left, the selected one's details on
 // the right, as in the other apps. Installing, updating and switching versions is in
 // services-installs.js. This pane polls while shown: installs move on without a status change.
-import { api, h, openWindow } from "../app.js";
-import { ask, BUSY, catalogDetail, catalogWorking, entry, load, pending, pg, pgWorking, phase, postgresDetail, services } from "./services-installs.js";
+import { api, h, openWindow, takeLink } from "../app.js";
+import { ask, BUSY, catalogDetail, confirmLink, catalogWorking, entry, load, pending, pg, pgWorking, phase, postgresDetail, services } from "./services-installs.js";
 
 const ORDER = ["Core", "Database", "Cache & Queue", "Search", "Storage", "Mail", "Debugging"];
 let showAll = true;
 let selection = null;
 let timer = null;
 let root = null;
+let asking = false;
+
+// A pending flock://install link shows its service, then asks (confirmLink).
+async function askLink(ctx) {
+  if (asking) return;
+  asking = true;
+  try {
+    const l = await takeLink("services");
+    if (!l) return;
+    selection = l.service;
+    ctx.rerender();
+    await confirmLink(ctx, l);
+  } finally {
+    asking = false;
+  }
+}
 
 
 const css = `
@@ -29,9 +45,6 @@ const css = `
   .accent { color: var(--accent); }
   pre.code { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); white-space: pre-wrap; word-break: break-all; }
   progress { width: 100%; accent-color: var(--accent); }
-  dialog.ask { width: 460px; padding: 18px; color: var(--fg); }
-  dialog.ask::backdrop { background: #0006; }
-  dialog.ask h3 { margin: 0 0 8px; }
   dialog.log { width: 720px; }
   dialog.log pre { height: 380px; overflow: auto; margin: 0; white-space: pre; }
 `;
@@ -157,6 +170,7 @@ export default {
       }, 2000);
     }
     if (!services) return (root = h("div", { class: "empty" }, "Loading services…"));
+    askLink(ctx);
 
     // With "Installed", also the selected service, so showing one from elsewhere still works.
     const shown = showAll ? services : services.filter((s) =>

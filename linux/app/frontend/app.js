@@ -67,3 +67,28 @@ export async function pickFolder(title) {
   const res = await fetch("/app/pick-folder?title=" + encodeURIComponent(title), { method: "POST" });
   return (await res.text()).trim();
 }
+
+// A modal question; resolves to { checked } on OK, null on Cancel or Escape.
+export function ask(title, text, ok, { danger, check } = {}) {
+  return new Promise((resolve) => {
+    const box = check && h("input", { type: "checkbox" });
+    const warning = check && h("div", { class: "small warn", hidden: true }, check.warning);
+    box?.addEventListener("change", () => { warning.hidden = !box.checked; });
+    const d = h("dialog", { class: "card ask" },
+      h("h3", {}, title), h("p", { class: "muted" }, text),
+      check && h("label", { class: "row" }, box, check.label), warning,
+      h("div", { class: "row", style: "justify-content: flex-end; margin-top: 14px" },
+        h("button", { onclick: () => d.close("") }, "Cancel"),
+        h("button", { class: "primary", style: danger ? "background: var(--bad); border-color: var(--bad)" : "", onclick: () => d.close("ok") }, ok)));
+    d.addEventListener("close", () => { d.remove(); resolve(d.returnValue === "ok" ? { checked: !!box?.checked } : null); });
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+// A flock:// link waiting for this pane to ask about it ("services", "php", "node" or "sites"),
+// or null. Taking it clears it, so it's asked about once.
+export async function takeLink(pane) {
+  const res = await fetch("/app/pending-link?pane=" + pane, { method: "POST" });
+  return res.status === 200 ? res.json() : null;
+}

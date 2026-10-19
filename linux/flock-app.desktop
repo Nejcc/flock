@@ -1,0 +1,29 @@
+[Desktop Entry]
+Type=Application
+Name=Flock
+GenericName=Local PHP development
+Comment=Local PHP development: sites, PHP, services, mail and dumps
+Exec=flock-app %u
+Icon=flock-app
+Terminal=false
+Categories=Development;
+Keywords=php;laravel;local;development;
+StartupWMClass=flock-app
+MimeType=x-scheme-handler/flock;
+Actions=Mail;Logs;Dumps;Settings;
+
+[Desktop Action Mail]
+Name=Mail
+Exec=flock-app mail
+
+[Desktop Action Logs]
+Name=Logs
+Exec=flock-app logs
+
+[Desktop Action Dumps]
+Name=Dumps
+Exec=flock-app dumps
+
+[Desktop Action Settings]
+Name=Settings
+Exec=flock-app settings

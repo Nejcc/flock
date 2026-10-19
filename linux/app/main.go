@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -47,12 +49,16 @@ var windowSizes = map[string][2]int{
 	"logs":     {1000, 650},
 	"dumps":    {920, 620},
 	"settings": {980, 680},
+	"setup":    {620, 600},
 }
 
 type flockApp struct {
 	app     *application.App
 	root    string
 	windows map[string]*application.WebviewWindow
+
+	mu      sync.Mutex
+	pending *link // a flock:// link waiting for its Settings pane to ask about it
 }
 
 func main() {
@@ -110,8 +116,20 @@ func main() {
 }
 
 // open shows the window named on the command line (the panel without one), and the part of it
-// named after that, e.g. `flock-app settings sites`.
+// named after that, e.g. `flock-app settings sites`. A flock:// link (the .desktop entry's %u)
+// opens the Settings pane that asks about it.
 func (f *flockApp) open(args []string) {
+	for _, a := range args {
+		if l, ok := parseLink(a); ok {
+			// ponytail: flock://update only opens General; on Linux the package manager or
+			// install.sh updates Flock.
+			f.mu.Lock()
+			f.pending = &l
+			f.mu.Unlock()
+			f.showSection("settings", l.pane())
+			return
+		}
+	}
 	for i, a := range args {
 		if _, ok := windowSizes[a]; ok {
 			section := ""
@@ -121,6 +139,11 @@ func (f *flockApp) open(args []string) {
 			f.showSection(a, section)
 			return
 		}
+	}
+	// Until Flock is set up, the app leads to the setup.
+	if _, err := os.Stat(f.flock()); err != nil {
+		f.show("setup")
+		return
 	}
 	f.show("panel")
 }
@@ -347,6 +370,21 @@ func (f *flockApp) handler() http.Handler {
 		}
 	})
 	mux.HandleFunc("POST /app/quit", func(http.ResponseWriter, *http.Request) { f.app.Quit() })
+	f.setupRoutes(mux)
+	// The pending flock:// link, taken by the pane that asks about it (?pane=services, ...).
+	mux.HandleFunc("POST /app/pending-link", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		l := f.pending
+		if l == nil || l.pane() != r.URL.Query().Get("pane") {
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		f.pending = nil
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(l)
+	})
 	return mux
 }
 

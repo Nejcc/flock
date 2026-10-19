@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Set up Flock</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  body { overflow: auto; }
+  main { padding: 24px 32px; }
+  .head img { width: 48px; height: 48px; }
+  .head h1 { margin: 12px 0 4px; font-size: 20px; }
+  .head p { margin: 0 0 20px; color: var(--muted); }
+  .item { display: flex; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: none; }
+  .item strong { display: block; font-weight: 600; }
+  .item .icon { margin-top: 2px; color: var(--muted); }
+  .item.warn .icon { color: var(--warn); }
+  .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .log { margin-top: 14px; padding: 10px 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; }
+  .bar { height: 3px; margin-bottom: 12px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 40% 100% no-repeat var(--line); animation: slide 1.2s linear infinite; }
+  @keyframes slide { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+  label.check { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<main id="page"></main>
+
+<script type="module">
+// Set up Flock, like the other apps' first start: what setting it up does, a check that no other
+// local environment holds Flock's ports, then `flock-php install` (one pkexec password dialog for
+// the root steps) with its output.
+import { api, app, h, openWindow } from "./app.js";
+import { icon } from "./icons.js";
+
+const page = document.getElementById("page");
+const startAtLogin = h("input", { type: "checkbox", checked: true });
+
+function head(title, text) {
+  return h("div", { class: "head" }, h("img", { src: "icon.png", alt: "" }), h("h1", {}, title), text && h("p", {}, text));
+}
+const item = (name, title, detail, cls = "") =>
+  h("div", { class: "item " + cls }, icon(name, 18), h("div", {}, h("strong", {}, title), h("span", { class: "muted" }, detail)));
+const buttons = (...b) => h("div", { class: "buttons" }, ...b);
+const button = (text, onclick, primary) => h("button", { class: primary ? "primary" : "", onclick }, text);
+const close = () => window.close();
+const log = (text) => h("pre", { class: "card mono log selectable" }, text);
+
+function intro(cli) {
+  page.replaceChildren(
+    head("Welcome to Flock", "Flock runs your Laravel sites, PHP, mail and databases on this computer. Setting it up takes a moment:"),
+    h("div", { class: "card" },
+      item("server", "Runs in the background", "The Flock daemon serves your sites and services, as a systemd user service that starts when you log in."),
+      item("code", "php, composer and node in your terminal", "Flock's versions come first on your PATH. Open a new terminal after setup."),
+      item("lock", "*.test sites with trusted HTTPS", "Linux asks once for your password: for .test DNS, to trust Flock's certificate and to serve ports 80 and 443.")),
+    h("label", { class: "check" }, startAtLogin, "Open Flock when I log in"),
+    cli ? buttons(button("Not now", close), button("Set Up Flock", run, true))
+      : h("div", { class: "error", style: "margin-top:16px" }, "flock-php isn't installed. Install it with your package manager (AUR: flock-php-bin) or install.sh, then open this window again."));
+}
+
+function conflicts(list) {
+  // By the app to quit, as the other apps group them.
+  const apps = new Map();
+  for (const c of list) apps.set(c.app, [...(apps.get(c.app) || []), c]);
+  page.replaceChildren(
+    head("Quit other local environments first", "Flock needs these ports for itself, but other programs use them. Running both would leave neither working."),
+    h("div", { class: "card" }, ...[...apps].map(([name, cs]) => {
+      const hint = cs[0].hint ? cs[0].hint[0].toUpperCase() + cs[0].hint.slice(1) : `Quit ${name}`;
+      const uses = cs.filter((c) => c.port).map((c) => `port ${c.port} (${c.service})`).join(", ");
+      return item("alert-triangle", hint, `${cs[0].holder || name} uses ${uses}.`, "warn");
+    })),
+    buttons(button("Not now", close), button("Check Again", run, true)));
+}
+
+async function run() {
+  page.replaceChildren(head("Checking Flock's ports…"), h("div", { class: "bar" }));
+  const found = (await (await fetch("/app/setup/conflicts", { method: "POST" })).json()).conflicts || [];
+  if (found.length) return conflicts(found);
+
+  const res = await fetch("/app/setup/install", { method: "POST" });
+  if (!res.ok && res.status !== 409) return failed(await res.text());
+  const out = log("");
+  page.replaceChildren(head("Setting up Flock…", "Your desktop asks for your password in a moment."), h("div", { class: "bar" }), out);
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 500));
+    const st = await (await fetch("/app/setup")).json();
+    out.textContent = st.output.trimEnd();
+    out.scrollTop = out.scrollHeight;
+    if (st.running) continue;
+    if (!st.ok) return failed(st.output);
+    if (startAtLogin.checked) await app("autostart?on=1").catch(() => {});
+    return done();
+  }
+}
+
+function failed(output) {
+  const declined = output.includes("administrator permission was declined");
+  page.replaceChildren(
+    head("Setup didn't finish", declined
+      ? "The password dialog was dismissed. Flock runs, but *.test sites won't resolve and HTTPS isn't trusted until you allow it."
+      : "Something went wrong. The output below says what; you can try again."),
+    log(output.trimEnd()),
+    buttons(button("Close", close), button("Try Again", run, true)));
+}
+
+// The first run installs the newest PHP and Node.js LTS as the defaults (status.defaults).
+async function defaults() {
+  const d = await api("/v1/status").then((s) => s.defaults).catch(() => null);
+  if (!d) return null;
+  const line = (name, x) => {
+    const v = x.version ? `${name} ${x.version}` : name;
+    if (x.state === "failed") return item("alert-triangle", `${v} couldn't be installed`, `${x.error || ""} Try again in Settings → ${name === "PHP" ? "PHP" : "Node"}.`, "warn");
+    if (x.state === "done") return item("check", `${v} is installed`, "");
+    return item("download", x.state === "installing" ? `Installing ${v}…` : `${v} is installed as soon as Flock can download it`, "");
+  };
+  return h("div", { class: "card", style: "margin-bottom:16px" }, line("PHP", d.php), line("Node.js", d.node));
+}
+
+async function done() {
+  page.replaceChildren(
+    head("Flock is ready"),
+    (await defaults()) || "",
+    h("div", { class: "card" },
+      item("terminal-2", "Open a new terminal", "Terminals that were already open still have the old PATH."),
+      item("world", "Link a project", "In a Laravel project, run `flock-php link`: the site is then at http://<folder>.test. `flock-php secure` adds HTTPS."),
+      item("code", "PHP and Node.js", "Settings → PHP and Node install other versions.")),
+    buttons(button("Open Settings", () => { openWindow("settings"); close(); }), button("Done", () => { openWindow("panel"); close(); }, true)));
+}
+
+// A setup that is still running when the window opens again.
+const st = await (await fetch("/app/setup")).json();
+st.running ? run() : intro(st.cli);
+</script>
+</body>
+</html>

@@ -2,10 +2,30 @@
 // pickers, HTTPS, and actions. Each picker offers the project's pin (or the default) first, then
 // the installed versions, which isolate the site on this machine. The pin button opens the row's
 // details: pinning into the project, extra domains, the server, and removing the site.
-import { api, app, h, openURL } from "../app.js";
+import { api, app, ask, h, openURL, takeLink } from "../app.js";
 import { icon } from "../icons.js";
 
 let expanded = null;
+let asking = false;
+
+// Asks about a pending flock://secure link (links.go), from the page served for a site that
+// isn't secured: nothing changes until the user confirms.
+async function askLink(ctx) {
+  if (asking) return;
+  asking = true;
+  try {
+    const l = await takeLink("sites");
+    if (!l) return;
+    const s = (ctx.status.sites || []).find((x) => x.name.toLowerCase() === l.site);
+    if (!s) return await ask(`Flock has no site called ${l.site}`, "Add the site in Settings → Sites first.", "OK");
+    if (s.secured) return await ask(`${s.name} is already secured`, `It's served at https://${s.domain}.`, "OK");
+    if (await ask(`Serve ${s.name} over HTTPS?`, `A link asked Flock to secure ${s.domain}. It gets a certificate this computer already trusts.`, "Secure")) {
+      await ctx.act(() => api(site(s.name), { method: "PATCH", body: { secured: true } }));
+    }
+  } finally {
+    asking = false;
+  }
+}
 
 const site = (name) => `/v1/sites/${encodeURIComponent(name)}`;
 const css = `
@@ -123,6 +143,7 @@ export default {
     if (path) ctx.act(() => api("/v1/sites", { method: "POST", body: { path } }));
   } }, "Add Site…"),
   render(ctx) {
+    askLink(ctx);
     const cfg = ctx.config;
     const sites = [...(ctx.status.sites || [])].sort((a, b) => a.name.localeCompare(b.name));
     if (!sites.length) {

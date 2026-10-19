@@ -1,7 +1,7 @@
 // Settings → PHP: the PHP versions from the binaries manifest, and the FrankenPHP builds, as in the
 // other apps: install, update, make default and uninstall, with download progress and the install
 // log. The pane loads its own data, every 2 s while something downloads and every 30 s otherwise.
-import { api, app, ago, h } from "../app.js";
+import { api, app, ago, ask, h, takeLink } from "../app.js";
 import { icon } from "../icons.js";
 
 let versions = null; // GET /v1/php/versions
@@ -11,6 +11,12 @@ let checking = false;
 let logOf = null; // the key of the row whose install log is shown ("php:8.4", "frankenphp:8.4")
 let log = "";
 const busy = new Set();
+
+// A flock://install link to a version this Flock can't install.
+const NO_BUILD = "There's no build of it for this computer, or the link is meant for a newer Flock.";
+const newest = (list, key) => list.filter((v) => v.latest).sort((a, b) =>
+  b[key].localeCompare(a[key], undefined, { numeric: true }))[0];
+let asking = false;
 let loadedAt = 0;
 let timer = 0;
 let dueAt = 0;
@@ -77,6 +83,26 @@ async function run(ctx, key, fn) {
   await ctx.act(fn);
   busy.delete(key);
   await load(ctx);
+}
+
+// Asks about a pending flock://install/php link (links.go) once the versions are loaded: nothing
+// installs until the user confirms. Without a version, the newest that isn't a pre-release.
+async function askLink(ctx) {
+  if (asking) return;
+  asking = true;
+  try {
+    const l = await takeLink("php");
+    if (!l) return;
+    const v = l.line ? versions.versions.find((x) => x.minor === l.line) : newest(versions.versions.filter((x) => !x.prerelease), "minor");
+    if (!v || (!v.installed && !v.latest)) return await ask(`Flock doesn't offer PHP ${l.line || ""}`.trim(), NO_BUILD, "OK");
+    if (v.installed) return await ask(`PHP ${v.minor} is already installed`, "You'll find it in Settings → PHP.", "OK");
+    if (v.job?.state === "running") return await ask(`PHP ${v.minor} is already being installed`, "Settings → PHP shows how far it is.", "OK");
+    if (await ask(`Install PHP ${v.minor}?`, `A link asked Flock to install PHP ${v.latest}. Sites that use it are served as soon as it's installed.`, "Install")) {
+      run(ctx, "php:" + v.minor, async () => { versions = await api(`/v1/php/versions/${v.minor}/install`, { method: "POST" }); });
+    }
+  } finally {
+    asking = false;
+  }
 }
 
 function jobText(job) {
@@ -198,6 +224,7 @@ export default {
     if (Date.now() - loadedAt > 5000) load(ctx);
     if (!versions) return root;
     schedule(ctx);
+    askLink(ctx);
 
     const check = h("button", { class: "link", disabled: checking, onclick: async () => {
       checking = true;

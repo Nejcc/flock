@@ -1,11 +1,12 @@
 // Settings → Services, the installs: PostgreSQL's majors and the catalog services' lines (MySQL,
 // Redis, Meilisearch, ...) side by side, as in the other apps. Installs run in the daemon (catalog
 // jobs, or PostgreSQL's busy majors); load() picks up their progress, also of the CLI's installs.
-import { api, ago, h, size } from "../app.js";
+import { api, ago, ask, h, size } from "../app.js";
 
 export let services = null;
 export let pg = null; // GET /v1/postgres/versions, null until loaded or where it isn't offered
 export let catalog = null; // GET /v1/catalog, likewise
+export { ask };
 export const pending = {}; // id → what the row says while this window's request runs
 const picked = {}; // id → { line, port } chosen before installing, kept across re-renders
 let checking = false;
@@ -35,6 +36,35 @@ export async function load(ctx) {
   }
 }
 
+// Asks about a flock://install link to a service (links.go): nothing installs until the user
+// confirms. Without a version, the first line offered.
+const NEWER = "The link may be meant for a newer Flock. Update Flock, then try again.";
+export async function confirmLink(ctx, l) {
+  const s = services.find((x) => x.id === l.service);
+  if (!s) return ask(`Flock doesn't offer ${l.service}`, NEWER, "OK");
+  if (!s.available) return ask(`${s.name} isn't available on this computer`, s.unavailable || "Flock can't run it on this platform.", "OK");
+  let name = s.name, label, version, install;
+  if (s.id === "postgres") {
+    const m = l.line ? pg?.majors?.find((x) => x.major === l.line) : pg?.majors?.[0];
+    if (!m) return ask(`Flock doesn't offer ${name} ${l.line || ""}`.trim(), NEWER, "OK");
+    if (m.installed) return ask(`PostgreSQL ${m.major} is already installed`, "You'll find it in Settings → Services.", "OK");
+    [label, version] = [m.major, m.latest];
+    install = () => api(`/v1/postgres/versions/${m.major}/install`, { method: "POST" });
+  } else {
+    const e = entry(s.id);
+    if (!e) return ask(`Flock doesn't offer ${name}`, NEWER, "OK");
+    const line = l.line ? e.lines?.find((x) => x.id === l.line) : e.lines?.[0];
+    name = e.name;
+    if (!line) return ask(`Flock doesn't offer ${name} ${l.line || ""}`.trim(), NEWER, "OK");
+    [label, version] = [line.label || line.id, line.latest];
+    if (line.installed) return ask(`${name} ${label} is already installed`, "You'll find it in Settings → Services.", "OK");
+    install = () => api(`/v1/catalog/${e.id}/install`, { method: "POST", body: { line: line.id, port: 0 } });
+  }
+  if (await ask(`Install ${name} ${label}?`, `A link asked Flock to install ${name} ${version || label}. It runs on 127.0.0.1 for your sites.`, "Install")) {
+    work(ctx, s.id, "Installing…", install);
+  }
+}
+
 // Runs a request with the row showing step meanwhile, then reloads. ctx.act shows a failure.
 async function work(ctx, id, step, fn) {
   pending[id] = step;
@@ -43,24 +73,6 @@ async function work(ctx, id, step, fn) {
   delete pending[id];
   await load(ctx).catch(() => {});
   ctx.rerender();
-}
-
-// A modal question; resolves to { checked } on OK, null on Cancel or Escape.
-export function ask(title, text, ok, { danger, check } = {}) {
-  return new Promise((resolve) => {
-    const box = check && h("input", { type: "checkbox" });
-    const warning = check && h("div", { class: "small warn", hidden: true }, check.warning);
-    box?.addEventListener("change", () => { warning.hidden = !box.checked; });
-    const d = h("dialog", { class: "card ask" },
-      h("h3", {}, title), h("p", { class: "muted" }, text),
-      check && h("label", { class: "row" }, box, check.label), warning,
-      h("div", { class: "row", style: "justify-content: flex-end; margin-top: 14px" },
-        h("button", { onclick: () => d.close("") }, "Cancel"),
-        h("button", { class: "primary", style: danger ? "background: var(--bad); border-color: var(--bad)" : "", onclick: () => d.close("ok") }, ok)));
-    d.addEventListener("close", () => { d.remove(); resolve(d.returnValue === "ok" ? { checked: !!box?.checked } : null); });
-    document.body.append(d);
-    d.showModal();
-  });
 }
 
 // The tail of a catalog install's log, followed while the install runs.

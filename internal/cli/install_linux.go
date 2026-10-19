@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 
 	"flock/internal/api"
 	"flock/internal/certs"
@@ -292,15 +293,29 @@ func resolvesToFlock(tld string) bool {
 	return false
 }
 
+// errDeclined is what the app looks for to tell a dismissed password dialog from a failure.
+var errDeclined = errors.New("administrator permission was declined")
+
 // runPrivileged runs a command as root: directly when flock already runs as root, else through
-// sudo, which asks for the password at the terminal.
+// sudo, which asks for the password at the terminal. Without a terminal (the Flock app runs
+// `flock-php install`) pkexec asks in the desktop's own password dialog instead.
 func runPrivileged(cmd *cobra.Command, exe string, args ...string) error {
 	run := exec.Command("sudo", append([]string{exe}, args...)...)
-	if os.Geteuid() == 0 {
+	switch {
+	case os.Geteuid() == 0:
 		run = exec.Command(exe, args...)
+	case !term.IsTerminal(int(os.Stdin.Fd())):
+		if _, err := exec.LookPath("pkexec"); err == nil {
+			run = exec.Command("pkexec", append([]string{exe}, args...)...)
+		}
 	}
 	run.Stdin, run.Stdout, run.Stderr = os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()
-	return run.Run()
+	err := run.Run()
+	// 126: pkexec's dialog was dismissed, or the user isn't allowed to authenticate.
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok && run.Args[0] == "pkexec" && exit.ExitCode() == 126 {
+		return errDeclined
+	}
+	return err
 }
 
 // systemTrusts reports whether the system's trust store has the CA, the way Go, curl and PHP see it.
