@@ -14,6 +14,7 @@ import (
 
 	"flock/internal/certs"
 	"flock/internal/node"
+	"flock/internal/paths"
 	"flock/internal/php"
 )
 
@@ -149,7 +150,7 @@ func installBinary(root string) (string, error) {
 		return "", err
 	}
 
-	dst := filepath.Join(root, "bin", exeName("flock"))
+	dst := filepath.Join(root, "bin", paths.CLI())
 	if self == dst {
 		return dst, nil
 	}

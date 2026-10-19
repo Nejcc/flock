@@ -63,8 +63,10 @@ func installService(root, bin string) error {
 	if err := os.MkdirAll(filepath.Dir(logFile), 0o700); err != nil {
 		return err
 	}
+	// Installs from before the CLI became flock-php left a bin/flock that shadows util-linux's.
+	_ = os.Remove(filepath.Join(root, "bin", "flock"))
 	if !systemdUser() {
-		serviceNote = "daemon runs in the background; without a systemd user session nothing starts it at login, so run `flock restart` after a reboot"
+		serviceNote = "daemon runs in the background; without a systemd user session nothing starts it at login, so run `flock-php restart` after a reboot"
 		stopDaemon(root)
 		return startDetached(root, bin)
 	}
@@ -207,9 +209,9 @@ func restartService() error {
 	if serviceInstalled() && systemdUser() {
 		return systemctl("--user", "restart", serviceUnit)
 	}
-	bin := filepath.Join(root, "bin", exeName("flock"))
+	bin := filepath.Join(root, "bin", paths.CLI())
 	if _, err := os.Stat(bin); err != nil {
-		return fmt.Errorf("the background daemon is not installed — run `flock install`")
+		return fmt.Errorf("the background daemon is not installed — run `flock-php install`")
 	}
 	stopDaemon(root)
 	return startDetached(root, bin)
@@ -351,7 +353,7 @@ func trustInBrowsers(cmd *cobra.Command, caPath string) {
 		return
 	}
 	if _, err := exec.LookPath("certutil"); err != nil {
-		cmd.Println("! Chrome and Firefox don't trust Flock's CA yet: install certutil (libnss3-tools or nss-tools) and run `flock install` again")
+		cmd.Println("! Chrome and Firefox don't trust Flock's CA yet: install certutil (libnss3-tools or nss-tools) and run `flock-php install` again")
 		return
 	}
 	nickname := nssNickname(caPath)
