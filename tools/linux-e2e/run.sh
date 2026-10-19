@@ -117,6 +117,10 @@ EOF
     check "$1: HTTPS to hello.test (system trust)" user 'curl -sS -o /dev/null https://hello.test/'
   }
   nmstate() { root 'nmcli -t -f DEVICE,STATE device | grep "^flock0:" | cut -d: -f2'; }
+  is_unmanaged() { [ "$(nmstate)" = unmanaged ] || {
+    nmstate
+    return 1
+  }; }
   # status_says yes|no <seconds>: waits for `flock-php status` to (not) report flock0.
   status_says() {
     for _ in $(seq "$2"); do
@@ -162,7 +166,7 @@ EOF
 
   if $nm; then
     echo "== NetworkManager"
-    check "flock0 unmanaged" sh -c "[ \"\$(nmstate)\" = unmanaged ]"
+    check "flock0 unmanaged" is_unmanaged
     root 'nmcli networking off; sleep 2; nmcli networking on; sleep 5; systemctl restart systemd-resolved; sleep 4'
     check "networking off/on + resolved restart: flock0 keeps its address" root 'ip -br addr show flock0 | grep -q 198.18.53.53'
     resolves "networking off/on + resolved restart"
@@ -171,7 +175,7 @@ EOF
     root 'printf "[keyfile]\nunmanaged-devices=interface-name:eth*;interface-name:en*\n" > /etc/NetworkManager/conf.d/zzz-admin.conf && systemctl restart NetworkManager && sleep 5'
     check "a drop-in after Flock's: status reports NetworkManager managing flock0 within 70 s" status_says_nm 70
     root 'rm /etc/NetworkManager/conf.d/zzz-admin.conf && systemctl restart NetworkManager && systemctl restart flock-dns.service && sleep 4'
-    check "drop-in removed: flock0 unmanaged, status clean within 70 s" sh -c "[ \"\$(nmstate)\" = unmanaged ]"
+    check "drop-in removed: flock0 unmanaged again" is_unmanaged
     check "status clean again" status_says no 70
   fi
 
