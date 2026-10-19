@@ -123,6 +123,15 @@ func TestWildcardCheckReportsWhyItDoesNotWork(t *testing.T) {
 		// Linux: they do once systemd-resolved (or another resolver) sends them to Flock.
 		arrives.Store(true)
 		reloadUntil(t, client, func(st api.Status) bool { return st.DNS.Wildcard && st.DNS.WildcardProblem == "" })
+
+		// With Flock's unit installed but its link gone, they still arrive until resolved restarts.
+		if err := os.WriteFile(dns.ResolvedFile(), []byte(dns.ResolvedContent(cfg.TLD, cfg.Ports.DNS)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Remove(dns.ResolvedFile()) })
+		reloadUntil(t, client, func(st api.Status) bool {
+			return st.DNS.Wildcard && strings.Contains(st.DNS.WildcardProblem, "flock0 is down")
+		})
 		return
 	}
 

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // systemd-resolved sends a domain's lookups to the DNS servers of the link that claims it as a
@@ -40,8 +42,13 @@ const (
 // ResolvedFile is the unit `flock install` writes on Linux to send the TLD to Flock.
 func ResolvedFile() string { return filepath.Join(UnitDir, Unit) }
 
-// NMFile is the NetworkManager drop-in that keeps it off Link.
-func NMFile() string { return filepath.Join(NMConfDir, "90-flock.conf") }
+// NMFile is the NetworkManager drop-in that keeps it off Link. NetworkManager reads drop-ins in
+// name order and a later unmanaged-devices= replaces the list, so the name sorts last; LinkProblem
+// notices when another drop-in wins anyway.
+func NMFile() string { return filepath.Join(NMConfDir, "zz-flock.conf") }
+
+// LegacyNMFile is the name the drop-in had before it sorted last.
+func LegacyNMFile() string { return filepath.Join(NMConfDir, "90-flock.conf") }
 
 // NMContent makes Link unmanaged. NetworkManager otherwise adopts it as an external device and
 // flushes its address when networking goes down (nmcli networking off, suspend), after which
@@ -98,6 +105,38 @@ var linkUp = func() bool {
 	return false
 }
 
+// nmManages reports whether NetworkManager manages Link. Without NetworkManager it doesn't. Tests
+// replace it.
+var nmManages = func() bool {
+	out, err := exec.Command("nmcli", "-t", "-f", "DEVICE,STATE", "device").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if device, state, _ := strings.Cut(line, ":"); device == Link {
+			return state != "unmanaged"
+		}
+	}
+	return false
+}
+
+// LinkProblem explains what will stop Link from sending tld lookups to Flock, even while they still
+// arrive: systemd-resolved keeps a link's scope after it lost its address until resolved restarts.
+// It returns "" when the link is fine, or isn't Flock's way of resolving the TLD on this machine.
+func LinkProblem(tld string) string {
+	if data, _ := os.ReadFile(ResolvedFile()); !strings.HasPrefix(string(data), "# Managed by Flock") {
+		return ""
+	}
+	if !linkUp() {
+		return fmt.Sprintf("%s is down or lost its address, so systemd-resolved stops sending .%s lookups to Flock (at the latest when it restarts) — run `sudo systemctl restart %s`", Link, tld, Unit)
+	}
+	if nmManages() {
+		return fmt.Sprintf("NetworkManager manages %s, so it takes the link's address when networking goes down — "+
+			"a drop-in read after %s probably sets unmanaged-devices= without it (see `NetworkManager --print-config`)", Link, NMFile())
+	}
+	return ""
+}
+
 // ResolvedProblem explains why systemd-resolved does not send tld lookups to Flock's DNS server on
 // port, or returns "" when the unit, the NetworkManager drop-in and Link are in place.
 func ResolvedProblem(tld string, port int) string {
@@ -118,8 +157,5 @@ func ResolvedProblem(tld string, port int) string {
 	if data, _ := os.ReadFile(NMFile()); string(data) != NMContent {
 		return fmt.Sprintf("%s is missing, so NetworkManager may take %s's address — run `flock-php install`", NMFile(), Link)
 	}
-	if !linkUp() {
-		return fmt.Sprintf("%s is down or lost its address, so systemd-resolved doesn't send .%s lookups to Flock — run `sudo systemctl restart %s`", Link, tld, Unit)
-	}
-	return ""
+	return LinkProblem(tld)
 }

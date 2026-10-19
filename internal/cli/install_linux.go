@@ -256,6 +256,9 @@ func ensurePrivileged(cmd *cobra.Command, s *state, bin string, ca *certs.CA) er
 		cmd.Printf("! systemd-resolved isn't running: for *.%s, have your DNS resolver forward .%s to 127.0.0.1 port %d\n", tld, tld, dnsPort)
 	case resolvesToFlock(tld):
 		cmd.Printf("✓ *.%s resolves via Flock\n", tld)
+		if problem := dns.LinkProblem(tld); problem != "" {
+			cmd.Printf("! but %s\n", problem)
+		}
 	default:
 		cmd.Printf("! *.%s doesn't resolve via Flock yet: see `systemctl status %s` and `flock-php status`\n", tld, dns.Unit)
 	}
@@ -439,6 +442,14 @@ func removeLegacyDropIn(tld string) {
 	}
 }
 
+// removeLegacyNMFile removes the NetworkManager drop-in under its earlier name, which sorted before
+// drop-ins that could replace its list.
+func removeLegacyNMFile() {
+	if data, _ := os.ReadFile(dns.LegacyNMFile()); string(data) == dns.NMContent {
+		_ = os.Remove(dns.LegacyNMFile())
+	}
+}
+
 func newPrivilegedSetupCommand() *cobra.Command {
 	var tld, caPath, lowPortsBin string
 	var dnsPort int
@@ -464,6 +475,7 @@ func newPrivilegedSetupCommand() *cobra.Command {
 					_ = os.Remove(dns.ResolvedFile())
 					_ = runTool("systemctl", "daemon-reload")
 				}
+				removeLegacyNMFile()
 				if data, _ := os.ReadFile(dns.NMFile()); string(data) == dns.NMContent {
 					_ = os.Remove(dns.NMFile())
 					// Install created them when NetworkManager wasn't there; with it, they aren't empty.
@@ -486,6 +498,7 @@ func newPrivilegedSetupCommand() *cobra.Command {
 				}
 				removeLegacyDropIn(tld)
 				// NetworkManager must leave the link alone before the unit creates it again.
+				removeLegacyNMFile()
 				if err := os.MkdirAll(dns.NMConfDir, 0o755); err != nil {
 					return err
 				}

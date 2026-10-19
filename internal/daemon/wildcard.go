@@ -68,6 +68,9 @@ func (d *daemon) checkWildcard() {
 		state.ok = state.problem == ""
 	case reaches(srv, cfg.TLD):
 		state.ok = true
+		if runtime.GOOS == "linux" {
+			state.problem = dns.LinkProblem(cfg.TLD) // works now, but won't for long
+		}
 	case runtime.GOOS == "windows":
 		state.problem = windowsWildcardProblem(cfg.TLD)
 	default:

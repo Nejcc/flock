@@ -8,11 +8,21 @@ import (
 )
 
 func TestResolvedProblem(t *testing.T) {
-	oldUnit, oldRuntime, oldNM, oldUp := UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp
+	oldUnit, oldRuntime, oldNM, oldUp, oldManages := UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp, nmManages
 	UnitDir, ResolvedRuntimeDir, NMConfDir = t.TempDir(), filepath.Join(t.TempDir(), "missing"), t.TempDir()
-	up := true
+	up, managed := true, false
 	linkUp = func() bool { return up }
-	t.Cleanup(func() { UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp = oldUnit, oldRuntime, oldNM, oldUp })
+	nmManages = func() bool { return managed }
+	t.Cleanup(func() {
+		UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp, nmManages = oldUnit, oldRuntime, oldNM, oldUp, oldManages
+	})
+
+	// Without Flock's unit the link isn't how the TLD resolves here.
+	up = false
+	if p := LinkProblem("test"); p != "" {
+		t.Fatalf("no unit: %q", p)
+	}
+	up = true
 
 	if p := ResolvedProblem("test", 53535); !strings.Contains(p, "systemd-resolved isn't running") || !strings.Contains(p, "port 53535") {
 		t.Fatalf("without systemd-resolved: %q", p)
@@ -38,10 +48,16 @@ func TestResolvedProblem(t *testing.T) {
 	}
 	// Something took the link down or flushed its address after setup.
 	up = false
-	if p := ResolvedProblem("test", 53535); !strings.Contains(p, "flock0 is down") || !strings.Contains(p, "systemctl restart flock-dns.service") {
+	if p := ResolvedProblem("test", 53535); !strings.Contains(p, "flock0 is down") || !strings.Contains(p, "systemctl restart flock-dns.service") || p != LinkProblem("test") {
 		t.Fatalf("link without its address: %q", p)
 	}
 	up = true
+	// A drop-in read after Flock's replaced its unmanaged-devices list.
+	managed = true
+	if p := LinkProblem("test"); !strings.Contains(p, "NetworkManager manages flock0") || !strings.Contains(p, "zz-flock.conf") {
+		t.Fatalf("managed by NetworkManager: %q", p)
+	}
+	managed = false
 	if p := ResolvedProblem("test", 5300); !strings.Contains(p, "port 5300") || !strings.Contains(p, "flock-php install") {
 		t.Fatalf("other port: %q", p)
 	}
