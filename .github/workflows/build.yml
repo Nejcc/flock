@@ -64,7 +64,7 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  # The Go tests on both platforms Flock supports (the race detector needs cgo, so macOS only).
+  # The Go tests on the platforms Flock supports (the race detector needs cgo, so not on Windows).
   go-test:
     name: Go tests (${{ matrix.name }})
     needs: version
@@ -74,6 +74,8 @@ jobs:
         include:
           - { name: macOS, os: macos-26, flags: -race }
           - { name: Windows, os: windows-2025, flags: "" }
+          - { name: Linux, os: ubuntu-24.04, flags: -race }
+          - { name: Linux arm64, os: ubuntu-24.04-arm, flags: -race }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
