@@ -1,0 +1,361 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flock Dumps</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  main { display: flex; flex-direction: column; height: 100vh; }
+  iframe { flex: 1; border: 0; width: 100%; background: var(--bg); }
+  #search { width: 260px; }
+  .menu { position: relative; }
+  .menu > div { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 230px; padding: 6px 0;
+                background: var(--bg-2); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 6px 20px #0003; }
+  .menu label { display: flex; align-items: center; gap: 10px; padding: 5px 12px; }
+  .menu hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+  .menu .note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="toolbar">
+    <strong id="title">Dumps</strong>
+    <input id="search" type="search" placeholder="Search dumps">
+    <span class="grow"></span>
+    <label class="row" title="Intercept dump() and dd() output from your sites and artisan commands"><input id="capture" type="checkbox"> <span id="capture-label">Capture Dumps</span></label>
+    <div class="menu">
+      <button id="kinds-button" title="What is captured next to dump() and dd()">Capture ▾</button>
+      <div id="kinds" hidden></div>
+    </div>
+    <label class="row" title="Show only the latest request or command"><input id="latest" type="checkbox"> Latest only</label>
+    <select id="editor" title="Editor used when clicking a dump's file and line"></select>
+    <button id="clear">Clear</button>
+  </div>
+  <div id="error" class="error" hidden></div>
+  <div id="content" class="scroll"></div>
+</main>
+
+<script type="module">
+import { api, h, openURL, poll } from "./app.js";
+
+const $ = (id) => document.getElementById(id);
+const KINDS = { query: "Queries", log: "Logs", view: "Views", job: "Jobs", request: "Requests" };
+const EDITORS = { phpstorm: "PhpStorm", vscode: "VS Code", cursor: "Cursor", zed: "Zed", none: "Don't link" };
+
+// Per-viewer preferences, like the other apps' Preferences.
+const pref = (key, fallback) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
+const setPref = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+
+let status = null;
+let dumps = [];
+let events = [];
+let header = "";
+let shown = "";
+
+function showError(err) {
+  $("error").hidden = !err;
+  $("error").textContent = err ? err.message || String(err) : "";
+}
+
+async function settings(body) {
+  showError(null);
+  try {
+    status = await api("/v1/settings", { method: "POST", body });
+  } catch (err) {
+    showError(err);
+  }
+  render();
+}
+
+// --- The timeline, a port of the Windows app's DumpTimeline. ---
+
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const time = (t) => new Date(t).toLocaleTimeString("en-GB");
+const duration = (ms) => ms >= 1000 ? `${+(ms / 1000).toFixed(2)} s` : `${+ms.toFixed(ms < 10 ? 2 : 1)} ms`;
+
+function editorURL(editor, file, line) {
+  const path = encodeURI(file).replace(/[?#]/g, encodeURIComponent);
+  const rooted = path.startsWith("/") ? path : "/" + path;
+  const at = line > 0 ? `:${line}` : "";
+  if (editor === "phpstorm") return `phpstorm://open?file=${path}${line > 0 ? `&line=${line}` : ""}`;
+  if (editor === "none") return null;
+  return `${editor}://file${rooted}${at}`;
+}
+
+// The path from the project's app/, resources/, … on, or its last three parts.
+function shortPath(file) {
+  for (const marker of ["/app/", "/resources/", "/routes/", "/database/", "/config/", "/tests/", "/vendor/", "/bootstrap/"]) {
+    const at = file.lastIndexOf(marker);
+    if (at >= 0) return file.slice(at + 1);
+  }
+  return file.split("/").filter(Boolean).slice(-3).join("/");
+}
+
+function source(src, editor, fallback) {
+  if (!src?.file) return fallback ? `<span>${esc(fallback)}</span>` : "";
+  const text = esc(shortPath(src.file) + (src.line > 0 ? `:${src.line}` : ""));
+  const url = editorURL(editor, src.file, src.line);
+  return url ? `<a href="${esc(url)}" title="${esc(src.file)}">${text}</a>` : `<span class="src" title="${esc(src.file)}">${text}</span>`;
+}
+
+const origin = (e) => e.request?.uri ? `${e.request.method} ${e.request.uri}` : e.command_line || "";
+const bindings = (e) => e.bindings?.length ? "[" + e.bindings.map((b) => JSON.stringify(b)).join(", ") + "]" : "";
+const context = (e) => e.context && typeof e.context === "object" && Object.keys(e.context).length ? JSON.stringify(e.context, null, 2) : "";
+
+function matches(fields, q) {
+  return !q || fields.some((f) => String(f ?? "").toLocaleLowerCase().includes(q));
+}
+
+function originHtml(e) {
+  if (e.request?.uri) {
+    const verb = (e.request.method || "").toUpperCase();
+    return `<span class="verb ${esc(verb.toLowerCase())}">${esc(verb)}</span><span class="what">${esc(e.request.uri)}</span>`;
+  }
+  if (e.command_line) return `<span class="verb cli">CLI</span><span class="what">${esc(e.command_line)}</span>`;
+  return `<span class="what">dump</span>`;
+}
+
+function eventHtml(e, editor) {
+  let meta = "";
+  let details = "";
+  switch (e.kind) {
+    case "query":
+      meta += `<span class="kind">Query</span>` + (e.connection ? `<span class="note">${esc(e.connection)}</span>` : "");
+      details += `<pre class="sql">${esc(e.sql)}</pre>` + (bindings(e) ? `<div class="bindings">${esc(bindings(e))}</div>` : "");
+      break;
+    case "log": {
+      const level = (e.level || "").toLowerCase();
+      meta += `<span class="kind level ${esc(level)}">${esc(level || "log")}</span>`;
+      details += `<div class="message">${esc(e.message)}</div>` + (context(e) ? `<pre class="context">${esc(context(e))}</pre>` : "");
+      break;
+    }
+    case "view":
+      meta += `<span class="kind">View</span><span class="what">${esc(e.view)}</span>`;
+      break;
+    case "job":
+      meta += `<span class="kind">Job</span><span class="what">${esc(e.job)}</span>`;
+      if (e.state) meta += `<span class="state ${esc(e.state)}">${esc(e.state)}</span>`;
+      if (e.queue) meta += `<span class="note">${esc(e.queue)}</span>`;
+      if (e.exception) details += `<pre class="exception">${esc(e.exception)}</pre>`;
+      break;
+  }
+  // A view links to its template; everything else to where it came from.
+  const src = e.kind === "view" && e.path ? { file: e.path } : e.source;
+  if (src?.file) meta += source(src, editor, "");
+  if (e.duration_ms) meta += `<span class="duration">${duration(e.duration_ms)}</span>`;
+  return `<article class="event ${esc(e.kind)}"><div class="meta">${meta}<time>${time(e.time)}</time></div>` +
+    (details ? `<div class="details">${details}</div>` : "") + "</article>";
+}
+
+// dumps and events newest first; a request's entries stay together, oldest first within it.
+function timelineHtml(ds, es, editor) {
+  const merged = [...ds.map((d) => ({ ...d, dump: true })), ...es].sort((a, b) => new Date(b.time) - new Date(a.time) || (b.dump ? 1 : 0) - (a.dump ? 1 : 0));
+  const groups = [];
+  const byKey = new Map();
+  for (const entry of merged) {
+    if (entry.group && byKey.has(entry.group)) { byKey.get(entry.group).push(entry); continue; }
+    const list = [entry];
+    groups.push(list);
+    if (entry.group) byKey.set(entry.group, list);
+  }
+  return groups.map((members) => {
+    const list = [...members].reverse();
+    const first = list.find((e) => e.request?.uri || e.command_line) || list[0];
+    const site = list.map((e) => e.site).find(Boolean) || "";
+    const request = list.findLast((e) => e.kind === "request");
+    let req = "";
+    if (request?.status_code) req += `<span class="status s${Math.min(Math.max(Math.floor(request.status_code / 100), 1), 5)}xx">${request.status_code}</span>`;
+    if (request?.duration_ms) req += `<span class="duration">${duration(request.duration_ms)}</span>`;
+    return `<section class="group"><header class="origin">${originHtml(first)}${req}` +
+      (site ? `<span class="site">${esc(site)}</span>` : "") + `<time>${time(list[0].time)}</time></header>` +
+      list.map((e) => e.dump
+        ? `<article class="dump"><div class="meta">${source(e.source, editor, "dump")}<time>${time(e.time)}</time></div>${e.html}</article>`
+        : e.kind === "request" ? "" : eventHtml(e, editor)).join("") +
+      "</section>";
+  }).join("");
+}
+
+// The dumps come as Symfony VarDumper HTML. They render in a sandboxed frame where no script runs
+// (the header's included) and nothing remote loads, like mail; so every value shows expanded.
+const frameStyle = `
+  :root { color-scheme: light dark; --text: #0f172a; --secondary: #475569; --tertiary: #64748b; --card: #fff; --line: #0f172a1a;
+          --header: #f2f9faee; --hover: #0f172a0d; --accent: #0369a1; --string: #a31515; --number: #098658; --key: #0451a5;
+          --type: #6f42c1; --keyword: #af00db; --get: #16a34a; --post: #b4530f; --cli: #64748b; --error: #dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --text: #e6f5f8; --secondary: #cbd5e1; --tertiary: #8b9bb0; --card: #131c2e; --line: #ffffff17; --header: #0f172aee;
+            --hover: #ffffff0f; --accent: #7dd3fc; --string: #ce9178; --number: #b5cea8; --key: #9cdcfe; --type: #c586c0;
+            --keyword: #569cd6; --get: #4ade80; --post: #fb923c; --cli: #8b9bb0; --error: #f87171; }
+  }
+  html, body { margin: 0; background: transparent; color: var(--text); font: 13px/1.45 system-ui, sans-serif; }
+  body { padding-bottom: 16px; }
+  .group { padding: 0 14px; }
+  .origin { position: sticky; top: 0; z-index: 10; display: flex; gap: 8px; align-items: center; margin: 0 -14px; padding: 8px 16px 7px;
+            background: var(--header); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--secondary); }
+  .verb, .status, .kind { font: 600 10px ui-monospace, monospace; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px; color: #fff; background: var(--get); white-space: nowrap; }
+  .verb.post, .verb.put, .verb.patch, .verb.delete, .status.s4xx { background: var(--post); }
+  .verb.cli, .status.s3xx { background: var(--cli); }
+  .status.s5xx { background: var(--error); }
+  .what { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .site, .state { padding: 1px 7px; border-radius: 10px; background: var(--hover); font-size: 11px; white-space: nowrap; }
+  .dump, .event { margin: 8px 0 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .meta { display: flex; gap: 8px; align-items: center; padding: 6px 12px; font-size: 12px; color: var(--secondary); min-width: 0; }
+  .dump .meta { border-bottom: 1px solid var(--line); }
+  .meta a, .meta span.src { font: 12px ui-monospace, monospace; color: var(--accent); text-decoration: none; }
+  .meta span.src { color: var(--secondary); }
+  .meta a:hover { text-decoration: underline; }
+  time { margin-left: auto; color: var(--tertiary); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .duration { font: 11px ui-monospace, monospace; color: var(--secondary); white-space: nowrap; }
+  .event .kind { text-transform: uppercase; background: var(--hover); color: var(--secondary); }
+  .event .kind.level.warning, .event .kind.level.notice { background: var(--post); color: #fff; }
+  .event .kind.level.error, .event .kind.level.critical, .event .kind.level.alert, .event .kind.level.emergency { background: var(--error); color: #fff; }
+  .event .what { font: 12px ui-monospace, monospace; font-weight: normal; }
+  .event .note { color: var(--tertiary); font-size: 11px; white-space: nowrap; }
+  .event .state.processed { color: var(--get); }
+  .event .state.failed { color: var(--error); }
+  .event .details { border-top: 1px solid var(--line); padding: 7px 12px; }
+  .event pre { margin: 0; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+  .event pre.exception { color: var(--error); }
+  .event pre.context, .event .bindings { color: var(--secondary); font: 12px/1.5 ui-monospace, monospace; margin-top: 3px; word-break: break-word; }
+  .event .message { white-space: pre-wrap; word-break: break-word; }
+  pre.sf-dump, pre.sf-dump .sf-dump-default { background: transparent !important; color: var(--text) !important; z-index: auto !important;
+    font: 12px/1.5 ui-monospace, monospace !important; }
+  pre.sf-dump { margin: 0 !important; padding: 10px 12px !important; white-space: pre-wrap !important; }
+  pre.sf-dump .sf-dump-compact { display: inline !important; }
+  pre.sf-dump .sf-dump-toggle span { display: none; }
+  pre.sf-dump .sf-dump-str { color: var(--string) !important; font-weight: normal !important; }
+  pre.sf-dump .sf-dump-num { color: var(--number) !important; font-weight: normal !important; }
+  pre.sf-dump .sf-dump-const { color: var(--keyword) !important; font-weight: 600 !important; }
+  pre.sf-dump .sf-dump-key, pre.sf-dump .sf-dump-index { color: var(--key) !important; }
+  pre.sf-dump .sf-dump-note, pre.sf-dump .sf-dump-ellipsis-note { color: var(--type) !important; }
+  pre.sf-dump .sf-dump-public, pre.sf-dump .sf-dump-protected, pre.sf-dump .sf-dump-private { color: var(--text) !important; }
+  pre.sf-dump .sf-dump-meta, pre.sf-dump .sf-dump-ref, pre.sf-dump .sf-dump-ellipsis { color: var(--tertiary) !important; }
+`;
+
+function frame(body) {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
+  const el = h("iframe", { sandbox: "allow-same-origin", srcdoc: `<!doctype html><html><head><meta charset="utf-8">${csp}${header}<style>${frameStyle}</style></head><body>${body}</body></html>` });
+  el.addEventListener("load", () => {
+    el.contentDocument.addEventListener("click", (e) => {
+      const a = e.target.closest("a[href]");
+      if (!a) return;
+      e.preventDefault();
+      if (/^(https?|phpstorm|vscode|cursor|zed):/i.test(a.getAttribute("href"))) openURL(a.getAttribute("href")).catch(showError);
+    });
+  });
+  return el;
+}
+
+// The newest request's (or command's) dumps and events: whichever list has the newest entry.
+function latestGroup(ds, es) {
+  const d = ds[0];
+  const e = es[0];
+  if (!d && !e) return [[], []];
+  const group = d && (!e || new Date(d.time) >= new Date(e.time)) ? d.group : e.group;
+  return [ds.filter((x) => x.group === group), es.filter((x) => x.group === group)];
+}
+
+function render() {
+  const st = status;
+  const capturing = st?.dumps === true;
+  $("capture").checked = capturing;
+  $("capture").disabled = !st;
+  $("capture-label").textContent = capturing ? "Capturing" : "Capture Dumps";
+  $("kinds-button").disabled = !st;
+  $("clear").disabled = !dumps.length && !events.length;
+  renderKinds();
+
+  const known = events.filter((e) => e.kind in KINDS);
+  let [ds, es] = $("latest").checked ? latestGroup(dumps, known) : [dumps, known];
+  const q = $("search").value.trim().toLocaleLowerCase();
+  ds = ds.filter((d) => matches([d.text, d.source?.file, origin(d), d.label], q));
+  es = es.filter((e) => matches([e.sql, bindings(e), e.message, e.level, e.view, e.path, e.job, e.exception, e.source?.file, origin(e)], q));
+  // Requests show in their group's header; they don't count as entries of their own.
+  const count = ds.length + es.filter((e) => e.kind !== "request").length;
+  $("title").textContent = count ? `Dumps (${count})` : "Dumps";
+
+  // Only when something changed, so the poll doesn't reload the frame and lose the scroll.
+  const key = JSON.stringify([count, q, $("latest").checked, $("editor").value, capturing, ds.map((d) => d.id), es.map((e) => e.id), header.length]);
+  if (key === shown) return;
+  shown = key;
+
+  if (!count) {
+    $("content").replaceChildren(h("div", { class: "empty" },
+      h("h3", {}, dumps.length || events.length ? "No matching dumps" : "No dumps yet"),
+      h("p", {}, capturing
+        ? "dump() and dd() output, queries, logs, views and jobs from your sites and artisan commands appear here."
+        : "Capture is off. Turn it on to collect dump() and dd() output here."),
+      !capturing && st && h("button", { class: "primary", onclick: () => settings({ dumps: true }) }, "Start Capturing")));
+    return;
+  }
+  const old = $("content").querySelector("iframe");
+  const scroll = old?.contentWindow?.scrollY || 0;
+  const el = frame(timelineHtml(ds, es, $("editor").value));
+  el.addEventListener("load", () => el.contentWindow.scrollTo(0, scroll));
+  $("content").replaceChildren(el);
+}
+
+// What is captured next to the dumps (needs the capture extension), and whether dump() still
+// shows in the page: dd() always does.
+function renderKinds() {
+  if ($("kinds").hidden || !status) return;
+  const off = status.capture_off || [];
+  const only = status.capture_unsupported || [];
+  const box = (checked, onchange) => {
+    const el = h("input", { type: "checkbox", checked });
+    el.addEventListener("change", () => onchange(el.checked));
+    return el;
+  };
+  $("kinds").replaceChildren(
+    ...Object.entries(KINDS).map(([kind, name]) => h("label", {},
+      box(!off.includes(kind), (on) => settings({ capture_off: on ? off.filter((k) => k !== kind) : [...off, kind] })), name)),
+    h("hr"),
+    h("label", {}, box(status.dumps_in_page, (on) => settings({ dumps_in_page: on })), "Show dump() in the page too"),
+    only.length > 0 && h("div", { class: "note" }, `PHP ${only.join(", ")}: dumps only`));
+}
+
+async function load() {
+  try {
+    [status, dumps, events] = await Promise.all([api("/v1/status"), api("/v1/dumps"), api("/v1/events")]);
+    dumps ||= [];
+    events ||= [];
+    if (dumps.length && !header) header = await api("/v1/dumps/header").catch(() => "");
+  } catch (err) {
+    status = null;
+    $("content").replaceChildren(h("div", { class: "empty" }, "Flock isn't running. ", err.message));
+    shown = "";
+    return;
+  }
+  render();
+}
+
+$("editor").replaceChildren(...Object.entries(EDITORS).map(([id, name]) => h("option", { value: id }, name)));
+$("editor").value = pref("dumps.editor", "phpstorm");
+$("editor").addEventListener("change", () => { setPref("dumps.editor", $("editor").value); render(); });
+$("latest").checked = pref("dumps.latest", "0") === "1";
+$("latest").addEventListener("change", () => { setPref("dumps.latest", $("latest").checked ? "1" : "0"); render(); });
+$("search").addEventListener("input", render);
+$("capture").addEventListener("change", () => settings({ dumps: $("capture").checked }));
+$("kinds-button").addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("kinds").hidden = !$("kinds").hidden;
+  renderKinds();
+});
+$("kinds").addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => { $("kinds").hidden = true; });
+$("clear").addEventListener("click", async () => {
+  if (!confirm("Clear all dumps? Every captured dump, query, log, view and job is deleted, from all sites and commands.")) return;
+  showError(null);
+  try {
+    await Promise.all([api("/v1/dumps", { method: "DELETE" }), api("/v1/events", { method: "DELETE" })]);
+  } catch (err) {
+    showError(err);
+  }
+  load();
+});
+
+// ponytail: refetches both lists every 2 s while shown (events cap at 5000); a count or change
+// marker in /v1/status would let it skip unchanged polls.
+poll(load);
+</script>
+</body>
+</html>

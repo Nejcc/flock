@@ -1,5 +1,5 @@
-// flock-app is Flock's tray app for Linux: the panel from the tray icon, and the Mail and Logs
-// windows, like the macOS menu bar app and the Windows tray app. The pages are plain HTML in
+// flock-app is Flock's tray app for Linux: the panel from the tray icon, and the Mail, Logs
+// and Dumps windows, like the macOS menu bar app and the Windows tray app. The pages are plain HTML in
 // frontend/; they reach the daemon's API at /api/ (passed on to its unix socket, as the CLI does)
 // and ask this program for what a page can't do itself at /app/.
 package main
@@ -45,6 +45,7 @@ var windowSizes = map[string][2]int{
 	"panel":    {380, 560},
 	"mail":     {1100, 700},
 	"logs":     {1000, 650},
+	"dumps":    {920, 620},
 	"settings": {980, 680},
 }
 
@@ -87,6 +88,7 @@ func main() {
 	menu.Add("Open Flock").OnClick(func(*application.Context) { f.show("panel") })
 	menu.Add("Mail").OnClick(func(*application.Context) { f.show("mail") })
 	menu.Add("Logs").OnClick(func(*application.Context) { f.show("logs") })
+	menu.Add("Dumps").OnClick(func(*application.Context) { f.show("dumps") })
 	menu.Add("Settings…").OnClick(func(*application.Context) { f.show("settings") })
 	menu.AddSeparator()
 	menu.Add("Restart Flock").OnClick(func(*application.Context) { go f.restart() })
@@ -262,8 +264,12 @@ func (f *flockApp) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /app/open", func(w http.ResponseWriter, r *http.Request) {
 		u := r.URL.Query().Get("url")
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "mailto:") {
-			http.Error(w, "only web links open", http.StatusBadRequest)
+		// Web and mail links, and the editor links of the Dumps window (xdg-open hands them on).
+		scheme, _, _ := strings.Cut(u, ":")
+		switch strings.ToLower(scheme) {
+		case "http", "https", "mailto", "phpstorm", "vscode", "cursor", "zed":
+		default:
+			http.Error(w, "only web and editor links open", http.StatusBadRequest)
 			return
 		}
 		_ = f.app.Browser.OpenURL(u)

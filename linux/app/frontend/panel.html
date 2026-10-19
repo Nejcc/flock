@@ -108,7 +108,8 @@ function render(st) {
       toggle("Capture dump() and events", st.dumps, "dumps")),
     h("div", { class: "shortcuts" },
       h("button", { onclick: () => openWindow("mail") }, "Mail ", st.mail_count ? h("span", { class: "badge" }, st.mail_count) : ""),
-      h("button", { onclick: () => openWindow("logs") }, "Logs")));
+      h("button", { onclick: () => openWindow("logs") }, "Logs"),
+      h("button", { onclick: () => openWindow("dumps") }, "Dumps")));
 }
 
 function renderStopped(installed, message) {
