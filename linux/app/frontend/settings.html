@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flock Settings</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .split > aside { width: 200px; padding-top: 8px; }
+  nav button { display: block; width: calc(100% - 16px); margin: 1px 8px; text-align: left; border: none; background: none; }
+  nav button.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .pane-head { padding: 16px 20px 8px; }
+  .pane-head h2 { margin: 0; font-size: 18px; }
+  .pane-body { flex: 1; overflow: auto; padding: 4px 20px 20px; }
+  .pane-body.flush { padding: 0; display: flex; min-height: 0; }
+  .group { margin: 14px 0; }
+  .group > h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .field { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .field > label, .field > .label { width: 150px; flex: none; color: var(--muted); }
+  .field .hint { color: var(--muted); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 9px; border: 1px solid var(--line); border-radius: 12px; }
+  .chip button { border: none; background: none; padding: 0 4px; color: var(--muted); }
+  input[type="text"] { font: inherit; color: inherit; background: var(--bg-2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; }
+</style>
+</head>
+<body>
+<div class="split">
+  <aside><nav id="nav"></nav></aside>
+  <main>
+    <div class="pane-head"><h2 id="title"></h2><div id="subtitle" class="muted"></div></div>
+    <div id="error" class="error" hidden></div>
+    <div id="pane" class="pane-body"></div>
+  </main>
+</div>
+
+<script type="module">
+import { api, h, poll } from "./app.js";
+import sites from "./settings/sites.js";
+import general from "./settings/general.js";
+
+const panes = { general, sites };
+const $ = (id) => document.getElementById(id);
+let current = location.hash.slice(1) in panes ? location.hash.slice(1) : "general";
+let data = null;
+let shown = "";
+
+// What a pane gets: the daemon's status and config, an action runner that shows errors and
+// reloads, and a way to re-render after a local change (a selection).
+const ctx = {
+  get status() { return data?.status; },
+  get config() { return data?.config; },
+  async act(fn) {
+    showError(null);
+    try {
+      await fn();
+    } catch (err) {
+      showError(err);
+    }
+    await refresh(true);
+  },
+  rerender: () => render(true),
+};
+
+function showError(err) {
+  $("error").hidden = !err;
+  $("error").textContent = err ? err.message || String(err) : "";
+}
+
+function render(force) {
+  const pane = panes[current];
+  $("nav").replaceChildren(...Object.entries(panes).map(([id, p]) =>
+    h("button", { class: id === current ? "active" : "", onclick: () => { current = id; location.hash = id; showError(null); render(true); } }, p.title)));
+  $("title").textContent = pane.title;
+  $("subtitle").textContent = pane.subtitle || "";
+  if (!data) return;
+  // Only when something changed, so typing in a field isn't interrupted by the poll.
+  const key = current + JSON.stringify(data);
+  if (!force && key === shown) return;
+  shown = key;
+  $("pane").className = "pane-body" + (pane.flush ? " flush" : "");
+  $("pane").replaceChildren(pane.render(ctx));
+}
+
+async function refresh(force) {
+  try {
+    const [status, config] = await Promise.all([api("/v1/status"), api("/v1/config")]);
+    data = { status, config };
+  } catch (err) {
+    data = null;
+    $("pane").replaceChildren(h("div", { class: "empty" }, "Flock isn't running. ", err.message));
+    shown = "";
+    return;
+  }
+  render(force);
+}
+
+window.addEventListener("hashchange", () => {
+  const id = location.hash.slice(1);
+  if (id in panes && id !== current) { current = id; render(true); }
+});
+render();
+poll(() => refresh(false));
+</script>
+</body>
+</html>

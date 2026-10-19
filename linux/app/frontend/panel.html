@@ -36,6 +36,7 @@
 <div id="content"></div>
 <footer>
   <button id="restart">Restart</button>
+  <button id="settings">Settings…</button>
   <span class="grow"></span>
   <button id="quit">Quit</button>
 </footer>
@@ -73,7 +74,7 @@ function item(state, name, detail) {
 
 function render(st) {
   $("headline").textContent = st.warnings?.length ? "Needs attention" : "Running";
-  $("subline").textContent = `v${st.version} · pid ${st.pid}`;
+  $("subline").textContent = `${/^\d/.test(st.version) ? "v" : ""}${st.version} · pid ${st.pid}`;
 
   const procs = st.processes || [];
   const dns = st.dns || {};
@@ -148,6 +149,7 @@ async function refresh() {
 
 $("restart").onclick = () => restart($("restart"), "Restarting…");
 $("quit").onclick = () => app("quit");
+$("settings").onclick = () => openWindow("settings");
 
 poll(refresh);
 </script>

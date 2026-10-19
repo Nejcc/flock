@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +42,10 @@ func icon(name string) []byte {
 
 // Windows the pages can open by name, with their size.
 var windowSizes = map[string][2]int{
-	"panel": {380, 560},
-	"mail":  {1100, 700},
-	"logs":  {1000, 650},
+	"panel":    {380, 560},
+	"mail":     {1100, 700},
+	"logs":     {1000, 650},
+	"settings": {980, 680},
 }
 
 type flockApp struct {
@@ -70,7 +72,7 @@ func main() {
 			UniqueID: "dev.flock.app",
 			// `flock-app mail` (e.g. from the .desktop file's actions) shows that window.
 			OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
-				f.show(windowArg(d.Args))
+				f.open(d.Args)
 			},
 		},
 	})
@@ -85,6 +87,7 @@ func main() {
 	menu.Add("Open Flock").OnClick(func(*application.Context) { f.show("panel") })
 	menu.Add("Mail").OnClick(func(*application.Context) { f.show("mail") })
 	menu.Add("Logs").OnClick(func(*application.Context) { f.show("logs") })
+	menu.Add("Settings…").OnClick(func(*application.Context) { f.show("settings") })
 	menu.AddSeparator()
 	menu.Add("Restart Flock").OnClick(func(*application.Context) { go f.restart() })
 	menu.AddSeparator()
@@ -96,7 +99,7 @@ func main() {
 	// Started at login (the autostart entry passes --background), it waits in the tray.
 	if !hasArg("--background") {
 		f.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-			f.show(windowArg(os.Args[1:]))
+			f.open(os.Args[1:])
 		})
 	}
 	if err := f.app.Run(); err != nil {
@@ -104,14 +107,20 @@ func main() {
 	}
 }
 
-// windowArg is the window named on the command line, or the panel.
-func windowArg(args []string) string {
-	for _, a := range args {
+// open shows the window named on the command line (the panel without one), and the part of it
+// named after that, e.g. `flock-app settings sites`.
+func (f *flockApp) open(args []string) {
+	for i, a := range args {
 		if _, ok := windowSizes[a]; ok {
-			return a
+			section := ""
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				section = args[i+1]
+			}
+			f.showSection(a, section)
+			return
 		}
 	}
-	return "panel"
+	f.show("panel")
 }
 
 func hasArg(arg string) bool {
@@ -154,8 +163,19 @@ func title(name string) string {
 	return "Flock " + strings.ToUpper(name[:1]) + name[1:]
 }
 
-func (f *flockApp) show(name string) {
+func (f *flockApp) show(name string) { f.showSection(name, "") }
+
+// showSection shows a window at a part of its page (its URL's fragment, e.g. a Settings pane).
+func (f *flockApp) showSection(name, section string) {
+	created := f.windows[name] == nil
 	w := f.window(name)
+	if section != "" {
+		if created {
+			w.SetURL("/" + name + ".html#" + url.PathEscape(section))
+		} else {
+			w.ExecJS("location.hash = " + strconv.Quote(section))
+		}
+	}
 	w.Show()
 	w.Focus()
 }
@@ -281,6 +301,32 @@ func (f *flockApp) handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
+	// A folder the user picks (Add Site, project folders); the response is its path, or empty.
+	mux.HandleFunc("POST /app/pick-folder", func(w http.ResponseWriter, r *http.Request) {
+		var dir string
+		application.InvokeSync(func() {
+			dir, _ = f.app.Dialog.OpenFile().CanChooseDirectories(true).CanChooseFiles(false).
+				SetTitle(r.URL.Query().Get("title")).PromptForSingleSelection()
+		})
+		_, _ = w.Write([]byte(dir))
+	})
+	// Open at login: an XDG autostart entry that starts the app in the tray.
+	mux.HandleFunc("GET /app/autostart", func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := os.Stat(autostartFile()); err != nil {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("POST /app/autostart", func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		if r.URL.Query().Get("on") == "1" {
+			err = writeAutostart()
+		} else if err = os.Remove(autostartFile()); errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
 	mux.HandleFunc("POST /app/window/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if _, ok := windowSizes[name]; !ok {
@@ -296,4 +342,22 @@ func (f *flockApp) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /app/quit", func(http.ResponseWriter, *http.Request) { f.app.Quit() })
 	return mux
+}
+
+func autostartFile() string {
+	dir, _ := os.UserConfigDir()
+	return filepath.Join(dir, "autostart", "flock-app.desktop")
+}
+
+func writeAutostart() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(autostartFile()), 0o755); err != nil {
+		return err
+	}
+	entry := "[Desktop Entry]\nType=Application\nName=Flock\nComment=Local PHP development\n" +
+		"Exec=\"" + self + "\" --background\nIcon=flock-app\nX-GNOME-Autostart-enabled=true\n"
+	return os.WriteFile(autostartFile(), []byte(entry), 0o644)
 }

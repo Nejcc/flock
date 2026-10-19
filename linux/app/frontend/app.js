@@ -61,3 +61,9 @@ export function poll(fn, ms = 2000) {
   setInterval(() => document.hidden || fn(), ms);
   document.addEventListener("visibilitychange", () => document.hidden || fn());
 }
+
+// A folder the user picks in the system's dialog, or "" when they cancel.
+export async function pickFolder(title) {
+  const res = await fetch("/app/pick-folder?title=" + encodeURIComponent(title), { method: "POST" });
+  return (await res.text()).trim();
+}
