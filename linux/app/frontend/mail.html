@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flock Mail</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .msg .from { font-weight: 600; }
+  .msg .subject { margin-top: 2px; }
+  .msg .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
+  .msg .inbox { padding: 0 6px; border-radius: 4px; background: var(--bg-2); }
+  .head { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .head h2 { margin: 0 0 6px; font-size: 16px; }
+  .head .meta { color: var(--muted); }
+  .attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  iframe { flex: 1; border: 0; width: 100%; background: #fff; }
+  pre { flex: 1; margin: 0; padding: 12px 16px; overflow: auto; white-space: pre-wrap; font: 12px/1.5 var(--mono); }
+  table.headers { border-collapse: collapse; margin: 12px 16px; }
+  table.headers td { padding: 3px 10px 3px 0; vertical-align: top; font: 12px/1.5 var(--mono); }
+  table.headers td:first-child { color: var(--muted); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="split">
+  <aside>
+    <div class="toolbar">
+      <strong class="grow">Mail</strong>
+      <button id="refresh">Refresh</button>
+      <button id="clear">Clear All</button>
+    </div>
+    <div id="list" class="scroll list"></div>
+  </aside>
+  <main id="message"><div class="empty">Select a message</div></main>
+</div>
+
+<script type="module">
+import { api, app, h, ago, size, openURL, poll } from "./app.js";
+
+const $ = (id) => document.getElementById(id);
+let messages = [];
+let selected = null;
+let tab = "html";
+let lastCount = -1;
+let smtp = "";
+
+async function load() {
+  try {
+    messages = (await api("/v1/mail")).sort((a, b) => new Date(b.date) - new Date(a.date));
+  } catch (err) {
+    $("list").replaceChildren(h("div", { class: "error" }, err.message));
+    return;
+  }
+  renderList();
+  if (selected && !messages.some((m) => m.id === selected)) {
+    selected = null;
+    $("message").replaceChildren(h("div", { class: "empty" }, "Select a message"));
+  }
+}
+
+function renderList() {
+  if (!messages.length) {
+    $("list").replaceChildren(h("div", { class: "empty" },
+      "No mail yet.", h("br"), `Send to ${smtp || "Flock's SMTP server"}; MAIL_USERNAME picks the inbox.`));
+    return;
+  }
+  $("list").replaceChildren(...messages.map((m) =>
+    h("div", { class: "msg" + (m.id === selected ? " selected" : ""), onclick: () => select(m.id) },
+      h("div", { class: "row" }, h("span", { class: "from grow ellipsis" }, m.from), h("span", { class: "muted" }, ago(m.date))),
+      h("div", { class: "subject ellipsis" }, m.subject || "(no subject)"),
+      h("div", { class: "meta" }, m.inbox && h("span", { class: "inbox" }, m.inbox), h("span", { class: "ellipsis" }, "to " + (m.to || []).join(", "))))));
+}
+
+async function select(id) {
+  selected = id;
+  renderList();
+  try {
+    renderMessage(await api(`/v1/mail/${encodeURIComponent(id)}`));
+  } catch (err) {
+    $("message").replaceChildren(h("div", { class: "error" }, err.message));
+  }
+}
+
+// Mail HTML runs without scripts and can't load anything remote (images included), like the
+// other apps; links open in the browser.
+function htmlFrame(html) {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
+  const frame = h("iframe", { sandbox: "allow-same-origin", srcdoc: csp + html });
+  frame.addEventListener("load", () => {
+    frame.contentDocument.addEventListener("click", (e) => {
+      const a = e.target.closest("a[href]");
+      if (!a) return;
+      e.preventDefault();
+      if (/^(https?|mailto):/i.test(a.href)) openURL(a.href);
+    });
+  });
+  return frame;
+}
+
+async function body(m) {
+  if (tab === "html") return m.html ? htmlFrame(m.html) : h("div", { class: "empty" }, "This message has no HTML part.");
+  if (tab === "text") return h("pre", {}, m.text || "(no text part)");
+  if (tab === "raw") return h("pre", {}, await api(`/v1/mail/${encodeURIComponent(m.id)}/raw`));
+  return h("div", { class: "scroll" }, h("table", { class: "headers selectable" },
+    ...(m.headers || []).map((x) => h("tr", {}, h("td", {}, x.name), h("td", {}, x.value)))));
+}
+
+async function renderMessage(m) {
+  if (tab === "html" && !m.html) tab = "text";
+  const tabs = ["html", "text", "raw", "headers"].map((t) =>
+    h("button", { class: t === tab ? "active" : "", onclick: () => { tab = t; renderMessage(m); } }, t === "html" ? "HTML" : t[0].toUpperCase() + t.slice(1)));
+  const atts = (m.attachments || []).map((a) =>
+    h("button", { title: a.content_type, onclick: () => app(`save-attachment?id=${encodeURIComponent(m.id)}&index=${a.index}&name=${encodeURIComponent(a.filename)}`).catch(alert) },
+      `📎 ${a.filename} (${size(a.size)})`));
+  $("message").replaceChildren(
+    h("div", { class: "head selectable" },
+      h("h2", {}, m.subject || "(no subject)"),
+      h("div", {}, h("strong", {}, m.from)),
+      h("div", { class: "meta" }, "To " + (m.to || []).join(", ")),
+      m.cc?.length > 0 && h("div", { class: "meta" }, "Cc " + m.cc.join(", ")),
+      h("div", { class: "meta" }, new Date(m.date).toLocaleString()),
+      atts.length > 0 && h("div", { class: "attachments" }, ...atts)),
+    h("div", { class: "tabs" }, ...tabs),
+    await body(m));
+}
+
+$("refresh").onclick = load;
+$("clear").onclick = async () => {
+  if (!messages.length || !confirm(`Delete all ${messages.length} messages?`)) return;
+  await api("/v1/mail", { method: "DELETE" });
+  load();
+};
+
+// New mail shows up through the status poll's count.
+poll(async () => {
+  try {
+    const st = await api("/v1/status");
+    smtp = st.mail;
+    if (st.mail_count !== lastCount) {
+      lastCount = st.mail_count;
+      load();
+    }
+  } catch (err) {
+    $("list").replaceChildren(h("div", { class: "error" }, err.message));
+    lastCount = -1;
+  }
+});
+</script>
+</body>
+</html>

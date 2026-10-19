@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X flock/internal/cli.Version=$(VERSION)
 
-.PHONY: build build-all test lint notices app dmg windows windows-test linux
+.PHONY: build build-all test lint notices app dmg windows windows-test linux linux-app
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/flock ./cmd/flock
@@ -47,6 +47,11 @@ linux:
 		rm -r dist/$$name && \
 		(cd dist && sha256sum $$name.tar.gz > $$name.tar.gz.sha256) || exit 1; \
 	done
+
+# The Linux tray app, bin/flock-app (linux/, a module of its own). Needs cgo, GTK 3 and WebKitGTK:
+# Arch webkit2gtk-4.1, Ubuntu libwebkit2gtk-4.1-dev, Fedora webkit2gtk4.1-devel.
+linux-app:
+	cd linux && go build -tags gtk3 -trimpath -ldflags "-s -w" -o ../bin/flock-app ./app
 
 # The tray app's models and API client (windows/FlockKit) run on any OS; the app itself is built on Windows (windows/build.ps1).
 windows-test:

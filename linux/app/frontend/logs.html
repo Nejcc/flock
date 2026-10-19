@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flock Logs</title>
+<link rel="stylesheet" href="app.css">
+<style>
+  .split > aside { width: 240px; }
+  pre { margin: 0; padding: 10px 14px; white-space: pre-wrap; font: 12px/1.5 var(--mono); }
+  .entry { padding: 6px 14px; border-bottom: 1px solid var(--line); }
+  .entry .top { display: flex; gap: 8px; align-items: baseline; }
+  .entry .level { font: 600 11px var(--mono); text-transform: uppercase; }
+  .entry .message { font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+  .entry details pre { padding: 6px 0; color: var(--muted); }
+  .level.error, .level.critical, .level.alert, .level.emergency { color: var(--bad); }
+  .level.warning { color: var(--warn); }
+  .level.info, .level.notice { color: var(--accent); }
+  .level.debug { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="split">
+  <aside>
+    <div class="toolbar"><strong>Logs</strong></div>
+    <div id="sources" class="scroll list"></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <strong id="title" class="grow ellipsis">Select a log</strong>
+      <input id="search" type="search" placeholder="Search">
+      <select id="level" hidden>
+        <option value="">All levels</option>
+        <option>debug</option><option>info</option><option>notice</option><option>warning</option>
+        <option>error</option><option>critical</option><option>alert</option><option>emergency</option>
+      </select>
+      <label class="row"><input id="auto" type="checkbox" checked> Auto-refresh</label>
+      <button id="refresh">Refresh</button>
+      <button id="clear" hidden>Clear</button>
+    </div>
+    <div id="log" class="scroll selectable"></div>
+  </main>
+</div>
+
+<script type="module">
+import { api, h, poll } from "./app.js";
+
+const $ = (id) => document.getElementById(id);
+let source = null; // {kind: "services"|"sites", name}
+let data = null;
+
+async function loadSources() {
+  let idx;
+  try {
+    idx = await api("/v1/logs");
+  } catch (err) {
+    $("sources").replaceChildren(h("div", { class: "error" }, err.message));
+    return;
+  }
+  const group = (title, kind, names) => names.length ? [h("h4", {}, title), ...names.map((name) =>
+    h("div", { class: source?.kind === kind && source.name === name ? "selected" : "", onclick: () => pick(kind, name) }, name))] : [];
+  $("sources").replaceChildren(...group("Sites", "sites", idx.sites), ...group("Services", "services", idx.services));
+}
+
+function pick(kind, name) {
+  source = { kind, name };
+  $("title").textContent = kind === "sites" ? `${name} (laravel.log)` : name;
+  $("level").hidden = $("clear").hidden = kind !== "sites";
+  data = null;
+  loadSources();
+  load();
+}
+
+async function load() {
+  if (!source) return;
+  const path = source.kind === "sites" ? `/v1/logs/sites/${encodeURIComponent(source.name)}?limit=200` : `/v1/logs/services/${encodeURIComponent(source.name)}?lines=300`;
+  try {
+    data = await api(path);
+  } catch (err) {
+    $("log").replaceChildren(h("div", { class: "error" }, err.message));
+    return;
+  }
+  render();
+}
+
+function render() {
+  if (data == null) return;
+  const q = $("search").value.toLowerCase();
+  const log = $("log");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+
+  if (typeof data === "string") {
+    const lines = data.split("\n").filter((l) => !q || l.toLowerCase().includes(q));
+    log.replaceChildren(h("pre", {}, lines.join("\n") || "(empty)"));
+  } else {
+    const level = $("level").value;
+    const entries = data.filter((e) => (!level || e.level === level) &&
+      (!q || (e.message + "\n" + e.details).toLowerCase().includes(q)));
+    log.replaceChildren(...(entries.length ? entries.map((e) => h("div", { class: "entry" },
+      h("div", { class: "top" }, h("span", { class: "level " + e.level }, e.level), h("span", { class: "muted mono" }, new Date(e.time).toLocaleString())),
+      h("div", { class: "message" }, e.message),
+      e.details && h("details", {}, h("summary", { class: "muted" }, "Details"), h("pre", {}, e.details)))) : [h("div", { class: "empty" }, "No entries")]));
+  }
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+$("search").oninput = render;
+$("level").onchange = render;
+$("refresh").onclick = () => { loadSources(); load(); };
+$("clear").onclick = async () => {
+  if (!confirm(`Clear the log of ${source.name}?`)) return;
+  await api(`/v1/logs/sites/${encodeURIComponent(source.name)}`, { method: "DELETE" });
+  load();
+};
+
+loadSources();
+poll(() => $("auto").checked && load());
+</script>
+</body>
+</html>
