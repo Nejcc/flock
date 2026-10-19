@@ -11,6 +11,10 @@ on:
       - internal/dns/**
       - internal/certs/**
       - internal/ports/**
+      - internal/daemon/**
+      - cmd/flock/**
+      - go.mod
+      - go.sum
       - install.sh
       - Makefile
       - tools/linux-e2e/**

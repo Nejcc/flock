@@ -47,7 +47,7 @@ chmod +x "$work/curl"
 
 build() { # build <version> <source dir>
   make -s -C "$2" -f "$repo/Makefile" linux VERSION="$1" >/dev/null &&
-    mv "$2"/dist/flock-"$1"-linux-x64.tar.gz* "$work/dist/"
+    mv "$2"/dist/flock-"$1"-linux-*.tar.gz* "$work/dist/"
 }
 echo "building the archives…"
 build 0.0.0-e2e "$repo" || exit 1
@@ -123,8 +123,14 @@ EOF
   }; }
   # status_says yes|no <seconds>: waits for `flock-php status` to (not) report flock0.
   status_says() {
+    local out
     for _ in $(seq "$2"); do
-      if user '$F status' 2>/dev/null | grep -q flock0; then [ "$1" = yes ] && return 0; else [ "$1" = no ] && return 0; fi
+      # A failing status (the daemon isn't running) says neither.
+      out=$(user '$F status' 2>/dev/null) || {
+        sleep 1
+        continue
+      }
+      if grep -q flock0 <<<"$out"; then [ "$1" = yes ] && return 0; else [ "$1" = no ] && return 0; fi
       sleep 1
     done
     user '$F status 2>&1 | grep -iA1 "^dns"'
@@ -144,11 +150,9 @@ EOF
   user 'mkdir -p ~/.pki/nssdb && certutil -d sql:$HOME/.pki/nssdb -N --empty-password'
 
   if [ -n "$from" ]; then
-    echo "== install $from"
-    user 'FLOCK_VERSION=0.0.0-from sh /test/install.sh </dev/null >/tmp/from.log 2>&1' || { cat "$work/from.log" 2>/dev/null; }
+    check "install $from" user 'FLOCK_VERSION=0.0.0-from sh /test/install.sh </dev/null >/tmp/from.log 2>&1 || { tail -8 /tmp/from.log; exit 1; }'
   fi
-  echo "== install this tree"
-  user 'FLOCK_VERSION=0.0.0-e2e sh /test/install.sh </dev/null 2>&1 | grep -E "^(✓|!|Error)" | sed "s/^/      /"'
+  check "install this tree" user 'FLOCK_VERSION=0.0.0-e2e sh /test/install.sh </dev/null >/tmp/install.log 2>&1 || { tail -8 /tmp/install.log; exit 1; }'
   user 'mkdir -p ~/Sites/hello/public && echo "<?php echo 1;" > ~/Sites/hello/public/index.php && cd ~/Sites && $F park >/dev/null'
   sleep 3
 
