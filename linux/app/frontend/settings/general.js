@@ -14,6 +14,8 @@ function checkbox(checked, onchange) {
 
 export default {
   title: "General",
+  icon: "settings",
+  color: "#64748b",
   render(ctx) {
     const st = ctx.status;
     const cfg = ctx.config;

@@ -5,12 +5,14 @@
 <title>Flock Settings</title>
 <link rel="stylesheet" href="app.css">
 <style>
-  .split > aside { width: 200px; padding-top: 8px; }
-  nav button { display: block; width: calc(100% - 16px); margin: 1px 8px; text-align: left; border: none; background: none; }
-  nav button.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-  .pane-head { padding: 16px 20px 8px; }
-  .pane-head h2 { margin: 0; font-size: 18px; }
-  .pane-body { flex: 1; overflow: auto; padding: 4px 20px 20px; }
+  .split > aside { width: 190px; padding-top: 10px; }
+  nav button { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 2px 8px; padding: 6px 8px; text-align: left; border: none; background: none; }
+  nav button:hover { background: var(--line); }
+  nav button.active { background: var(--line); }
+  .tile { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; color: #fff; }
+  .pane-head { display: flex; align-items: flex-start; gap: 12px; padding: 26px 26px 12px; }
+  .pane-head h2 { margin: 0 0 2px; font-size: 20px; }
+  .pane-body { flex: 1; overflow: auto; padding: 4px 26px 26px; }
   .pane-body.flush { padding: 0; display: flex; min-height: 0; }
   .group { margin: 14px 0; }
   .group > h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
@@ -20,14 +22,13 @@
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 9px; border: 1px solid var(--line); border-radius: 12px; }
   .chip button { border: none; background: none; padding: 0 4px; color: var(--muted); }
-  input[type="text"] { font: inherit; color: inherit; background: var(--bg-2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; }
 </style>
 </head>
 <body>
 <div class="split">
   <aside><nav id="nav"></nav></aside>
   <main>
-    <div class="pane-head"><h2 id="title"></h2><div id="subtitle" class="muted"></div></div>
+    <div class="pane-head"><div class="grow"><h2 id="title"></h2><div id="subtitle" class="muted"></div></div><div id="actions" class="row"></div></div>
     <div id="error" class="error" hidden></div>
     <div id="pane" class="pane-body"></div>
   </main>
@@ -35,6 +36,7 @@
 
 <script type="module">
 import { api, h, poll } from "./app.js";
+import { icon } from "./icons.js";
 import sites from "./settings/sites.js";
 import general from "./settings/general.js";
 
@@ -69,7 +71,8 @@ function showError(err) {
 function render(force) {
   const pane = panes[current];
   $("nav").replaceChildren(...Object.entries(panes).map(([id, p]) =>
-    h("button", { class: id === current ? "active" : "", onclick: () => { current = id; location.hash = id; showError(null); render(true); } }, p.title)));
+    h("button", { class: id === current ? "active" : "", onclick: () => { current = id; location.hash = id; showError(null); render(true); } },
+      h("span", { class: "tile", style: `background:${p.color}` }, icon(p.icon, 15)), p.title)));
   $("title").textContent = pane.title;
   $("subtitle").textContent = pane.subtitle || "";
   if (!data) return;
@@ -79,6 +82,7 @@ function render(force) {
   shown = key;
   $("pane").className = "pane-body" + (pane.flush ? " flush" : "");
   $("pane").replaceChildren(pane.render(ctx));
+  $("actions").replaceChildren(...(pane.actions ? [pane.actions(ctx)] : []));
 }
 
 async function refresh(force) {
