@@ -41,7 +41,10 @@ const css = `
   table.sites .actions { white-space: nowrap; text-align: right; }
   table.sites tr.details td { background: color-mix(in srgb, var(--bg) 50%, transparent); padding: 4px 12px 14px; }
   .detail-grid { display: grid; grid-template-columns: 120px 1fr; gap: 10px 14px; align-items: center; }
-  .detail-grid > .k { color: var(--muted); }
+  .detail-grid > .k { color: var(--muted); align-self: start; padding-top: 5px; }
+  .exts { display: flex; flex-direction: column; gap: 6px; }
+  .exts .ext { display: flex; align-items: center; gap: 10px; }
+  .exts .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 2px 1px 9px; border: 1px solid var(--line-strong); border-radius: 12px; }
   .footnote { margin: 10px 4px; color: var(--muted); font-size: 12px; }
@@ -104,9 +107,72 @@ function details(ctx, s) {
     h("span", { class: "k" }, "Server"), h("div", { class: "row" }, server, worker,
       fp && h("span", { class: "muted" }, fp.problem || [fp.state, fp.version].filter(Boolean).join(" · ")),
       fp && h("button", { onclick: () => ctx.act(() => api(`${site(s.name)}/restart`, { method: "POST" })) }, "Restart")),
+    h("span", { class: "k" }, "PHP extensions"), extensions(ctx, s),
+    (s.boost === "missing" || s.boost === "outdated") && h("span", { class: "k" }, "Laravel Boost"),
+    (s.boost === "missing" || s.boost === "outdated") && boost(ctx, s),
     !s.parked && h("span", { class: "k" }, ""),
-    !s.parked && h("div", {}, h("button", { onclick: () => confirm(`Stop serving ${s.domain}? The folder stays as it is.`) &&
+    !s.parked && h("div", {}, h("button", { onclick: async () => await ask(`Stop serving ${s.name}?`, `${s.domain} stops working. The folder stays as it is.`, "Remove Site", { danger: true }) &&
       ctx.act(() => api(site(s.name), { method: "DELETE" })) }, "Remove Site")))));
+}
+
+// The project uses Laravel Boost, and Flock's guideline is missing from it or outdated.
+function boost(ctx, s) {
+  const missing = s.boost === "missing";
+  return h("div", {},
+    h("div", { class: "muted" }, missing
+      ? "The project uses Laravel Boost. Adding Flock to its guidelines tells AI agents that Flock serves the app and picks its PHP version."
+      : "Flock's guideline in the project's Boost guidelines is outdated."),
+    h("button", { class: "link", onclick: async () => {
+      const ok = await ask(missing ? `Add Flock to ${s.name}'s Boost guidelines?` : `Update Flock's guideline in ${s.name}?`,
+        `Writes .ai/guidelines/flock.md in ${s.path} and runs php artisan boost:update, so AI agents know Flock serves the app and picks its PHP version. Commit the changes with the project.`,
+        missing ? "Add" : "Update");
+      if (ok) ctx.act(() => api(`${site(s.name)}/boost`, { method: "POST" }));
+    } }, missing ? "Add Flock to its guidelines…" : "Update it…"));
+}
+
+// A site's PHP extensions: what composer.json and the locked packages require, what a Laravel
+// app's configuration shows it uses without requiring it, and whether the site's PHP has each.
+// Loaded when the row's details open; kept per site until the details close.
+const exts = new Map(); // site name → { report, error, adding }
+
+function extensions(ctx, s) {
+  let e = exts.get(s.name);
+  if (!e) {
+    e = {};
+    exts.set(s.name, e);
+    api(`${site(s.name)}/extensions`).then((r) => { e.report = r; }, (err) => { e.error = err.message; }).then(ctx.rerender);
+  }
+  const require = async (name) => {
+    if (!await ask(`Require ext-${name} in composer.json?`, `Runs composer require ext-${name}:* in ${s.path}, which changes composer.json and composer.lock. Commit them with the project.`, "Require")) return;
+    e.adding = name;
+    e.error = null;
+    ctx.rerender();
+    try {
+      e.report = await api(`${site(s.name)}/extensions/${encodeURIComponent(name)}/require`, { method: "POST" });
+    } catch (err) {
+      e.error = err.message;
+    }
+    e.adding = null;
+    ctx.rerender();
+  };
+  const r = e.report;
+  return h("div", { class: "exts" },
+    e.error && h("div", { style: "color: var(--bad)" }, "⚠ " + e.error),
+    !r && !e.error && h("span", { class: "muted" }, "Loading…"),
+    r && h("div", { class: "muted" }, [r.php ? `PHP ${r.php}` : "No PHP version yet", r.laravel && "Laravel app"].filter(Boolean).join(" · ")),
+    r && !r.extensions.length && h("div", { class: "muted" }, "The project requires no PHP extensions."),
+    ...(r?.extensions || []).map((x) => {
+      const declared = x.required_by?.length > 0;
+      const color = !x.available ? "var(--bad)" : declared ? "var(--ok)" : "var(--warn)";
+      let detail = declared ? `Required by ${x.required_by.join(", ")}` : `Not required, but used: ${x.hint}`;
+      if (!x.available && r.php) detail += ` — Flock's PHP ${r.php} doesn't include it`;
+      return h("div", { class: "ext" },
+        h("span", { class: "dot", style: `background:${color}` }),
+        h("div", { class: "grow" }, h("strong", {}, x.name), h("div", { class: "muted" }, detail)),
+        e.adding === x.name ? h("span", { class: "muted" }, "Requiring…")
+          : !declared && h("button", { disabled: !!e.adding, onclick: () => require(x.name) }, "Add to composer.json…"));
+    }),
+    r?.extensions.length > 0 && h("div", { class: "muted", style: "font-size: 12px" }, "Requiring an extension in composer.json makes composer install refuse a server without it, instead of the app failing there."));
 }
 
 function row(ctx, s, cfg) {
@@ -128,8 +194,8 @@ function row(ctx, s, cfg) {
     h("td", { class: "actions" },
       h("button", { class: "ghost", title: "Open in the browser", onclick: () => openURL(url) }, icon("compass", 17)),
       h("button", { class: "ghost", title: "Show the folder", onclick: () => app("folder?path=" + encodeURIComponent(s.path)) }, icon("folder", 17)),
-      h("button", { class: "ghost", title: "Pins, domains and server", style: expanded === s.name ? "color: var(--accent)" : "",
-        onclick: () => { expanded = expanded === s.name ? null : s.name; ctx.rerender(); } }, icon("pin", 17))));
+      h("button", { class: "ghost", title: "Pins, domains, server, extensions", style: expanded === s.name ? "color: var(--accent)" : "",
+        onclick: () => { exts.delete(s.name); expanded = expanded === s.name ? null : s.name; ctx.rerender(); } }, icon("pin", 17))));
 }
 
 export default {
