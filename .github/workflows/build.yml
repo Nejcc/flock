@@ -299,3 +299,33 @@ jobs:
             dist/flock-*-linux-*.tar.gz
             dist/flock-*-linux-*.tar.gz.sha256
           if-no-files-found: error
+
+  linux-app:
+    name: Linux app (x64)
+    needs: version
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: linux/go.mod
+          cache-dependency-path: linux/go.sum
+
+      # cgo against GTK 3 and WebKitGTK 4.1 (Wails' gtk3 build tag).
+      - name: Install GTK and WebKitGTK
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build archive
+        run: make linux-app-archive VERSION=${{ needs.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flock-linux-app
+          path: |
+            dist/flock-app-*-linux-x64.tar.gz
+            dist/flock-app-*-linux-x64.tar.gz.sha256
+          if-no-files-found: error

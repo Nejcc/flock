@@ -1,7 +1,8 @@
 // Command notices writes THIRD_PARTY_NOTICES: the licenses of the third-party code that ships in
-// Flock's builds. That is the Go modules linked into flock and flock-helper (for macOS and
-// Windows), the PHP packages embedded for the dumps server, Sparkle in the macOS app, and the
-// runtimes the Windows tray app bundles. Run it from the repository root after changing dependencies:
+// Flock's builds. That is the Go modules linked into flock and flock-helper (for macOS, Windows
+// and Linux), the PHP packages embedded for the dumps server, Sparkle in the macOS app, the
+// runtimes the Windows tray app bundles, and the Go modules and fonts of the Linux app
+// (linux/, a module of its own). Run it from the repository root after changing dependencies:
 //
 //	go run ./tools/notices
 //
@@ -26,9 +27,17 @@ import (
 const output = "THIRD_PARTY_NOTICES"
 
 // The builds Flock ships; each links a slightly different set of modules.
-var targets = []struct{ goos, goarch string }{{"darwin", "arm64"}, {"windows", "amd64"}}
+var targets = []struct{ goos, goarch string }{{"darwin", "arm64"}, {"windows", "amd64"}, {"linux", "amd64"}}
 
 var programs = []string{"./cmd/flock", "./cmd/flock-helper"}
+
+// The Linux app: its module, its program, its build tag, and the fonts its pages embed.
+const linuxModule, linuxProgram, linuxTags = "linux", "./app", "gtk3"
+
+var linuxFonts = []struct{ name, file string }{
+	{"Inter", "linux/app/frontend/fonts/Inter-OFL.txt"},
+	{"JetBrains Mono", "linux/app/frontend/fonts/JetBrainsMono-OFL.txt"},
+}
 
 const phpVendor = "internal/dumps/server/vendor"
 
@@ -53,7 +62,11 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	all = append(goMods, phpPkgs...)
+	linuxMods, err := linuxAppModules(goMods)
+	if err != nil {
+		fail(err)
+	}
+	all = append(append(goMods, phpPkgs...), linuxMods...)
 
 	var missing []string
 	for _, c := range all {
@@ -65,7 +78,7 @@ func main() {
 		fail(fmt.Errorf("no license file found for:\n  %s", strings.Join(missing, "\n  ")))
 	}
 
-	text, err := render(goMods, phpPkgs)
+	text, err := render(goMods, phpPkgs, linuxMods)
 	if err != nil {
 		fail(err)
 	}
@@ -84,30 +97,56 @@ func main() {
 func goModules() ([]component, error) {
 	seen := map[string]component{}
 	for _, t := range targets {
-		cmd := exec.Command("go", append([]string{"list", "-deps", "-f",
-			"{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}{{end}}{{end}}"}, programs...)...)
-		cmd.Env = append(os.Environ(), "GOOS="+t.goos, "GOARCH="+t.goarch, "CGO_ENABLED=0")
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		if err != nil {
+		if err := listModules(seen, "", []string{"GOOS=" + t.goos, "GOARCH=" + t.goarch, "CGO_ENABLED=0"}, programs...); err != nil {
 			return nil, fmt.Errorf("go list for %s/%s: %w", t.goos, t.goarch, err)
-		}
-		for line := range strings.Lines(string(out)) {
-			fields := strings.Split(strings.TrimSpace(line), "\t")
-			if len(fields) != 3 {
-				continue
-			}
-			if _, ok := seen[fields[0]]; ok {
-				continue
-			}
-			files, err := licenseFiles(fields[2])
-			if err != nil {
-				return nil, err
-			}
-			seen[fields[0]] = component{name: fields[0], version: fields[1], files: files}
 		}
 	}
 	return sorted(seen), nil
+}
+
+// linuxAppModules lists the Go modules linked into flock-app that the CLI doesn't already link
+// (Wails and its dependencies). flock itself comes in through a replace and is skipped.
+func linuxAppModules(cli []component) ([]component, error) {
+	seen := map[string]component{"flock": {}}
+	for _, c := range cli {
+		seen[c.name] = c
+	}
+	found := map[string]component{}
+	if err := listModules(found, linuxModule, []string{"GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=1"}, "-tags", linuxTags, linuxProgram); err != nil {
+		return nil, fmt.Errorf("go list for the Linux app: %w", err)
+	}
+	for name := range seen {
+		delete(found, name)
+	}
+	return sorted(found), nil
+}
+
+// listModules adds the non-main modules the packages depend on to seen, run in dir.
+func listModules(seen map[string]component, dir string, env []string, args ...string) error {
+	cmd := exec.Command("go", append([]string{"list", "-deps", "-f",
+		"{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}{{end}}{{end}}"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+	for line := range strings.Lines(string(out)) {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) != 3 {
+			continue
+		}
+		if _, ok := seen[fields[0]]; ok {
+			continue
+		}
+		files, err := licenseFiles(fields[2])
+		if err != nil {
+			return err
+		}
+		seen[fields[0]] = component{name: fields[0], version: fields[1], files: files}
+	}
+	return nil
 }
 
 // phpPackages lists the Composer packages vendored for the dumps server (embedded in flock), plus
@@ -162,7 +201,7 @@ func sorted(m map[string]component) []component {
 	return list
 }
 
-func render(goMods, phpPkgs []component) ([]byte, error) {
+func render(goMods, phpPkgs, linuxMods []component) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString(header)
 
@@ -199,6 +238,17 @@ func render(goMods, phpPkgs []component) ([]byte, error) {
 	b.WriteString(macOS)
 	b.Write(normalize(sparkleLicense))
 	b.WriteString(windows)
+	if err := section("The Linux app (flock-app): Go modules beyond the ones above", linuxMods); err != nil {
+		return nil, err
+	}
+	b.WriteString("\nThe Linux app embeds these fonts, under the SIL Open Font License 1.1:\n")
+	for _, f := range linuxFonts {
+		data, err := os.ReadFile(f.file)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&b, "\n%s\n%s\n\n%s", f.name, strings.Repeat("-", len(f.name)), normalize(data))
+	}
 	return b.Bytes(), nil
 }
 

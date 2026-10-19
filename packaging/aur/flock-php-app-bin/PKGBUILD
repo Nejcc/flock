@@ -1,0 +1,29 @@
+# Flock's Linux app from the release archive: the tray icon, panel, Settings, Mail, Logs and Dumps,
+# as /usr/bin/flock-app with its .desktop entry and icon. It runs the CLI from flock-php-bin.
+#
+# For a new release: set _tag, then `updpkgsums && makepkg --printsrcinfo > .SRCINFO`, and push this
+# directory to ssh://aur@aur.archlinux.org/flock-php-app-bin.git.
+
+pkgname=flock-php-app-bin
+_tag=1.0.0-beta.10
+pkgver=${_tag/-/}
+pkgrel=1
+pkgdesc='The tray app for Flock: sites, PHP and Node versions, services, mail and dumps'
+arch=(x86_64)
+url='https://github.com/flock-php/flock'
+license=(AGPL-3.0-only)
+depends=(flock-php gtk3 webkit2gtk-4.1)
+optdepends=('gnome-shell-extension-appindicator: the tray icon on GNOME')
+provides=(flock-php-app)
+conflicts=(flock-php-app)
+install=flock-php-app-bin.install
+options=(!strip !debug)
+source_x86_64=("$url/releases/download/v$_tag/flock-app-$_tag-linux-x64.tar.gz")
+sha256sums_x86_64=(SKIP)
+
+package() {
+  install -Dm755 flock-app "$pkgdir/usr/bin/flock-app"
+  install -Dm644 flock-app.desktop "$pkgdir/usr/share/applications/flock-app.desktop"
+  install -Dm644 flock-app.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/flock-app.png"
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE NOTICE THIRD_PARTY_NOTICES
+}

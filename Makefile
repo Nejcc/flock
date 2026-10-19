@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X flock/internal/cli.Version=$(VERSION)
 
-.PHONY: build build-all test lint notices app dmg windows windows-test linux linux-app
+.PHONY: build build-all test lint notices app dmg windows windows-test linux linux-app linux-app-archive
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/flock ./cmd/flock
@@ -52,6 +52,18 @@ linux:
 # Arch webkit2gtk-4.1, Ubuntu libwebkit2gtk-4.1-dev, Fedora webkit2gtk4.1-devel.
 linux-app:
 	cd linux && go build -tags gtk3 -trimpath -ldflags "-s -w" -o ../bin/flock-app ./app
+
+# The Linux app as a release archive (the AUR package flock-php-app downloads it), x64 only: it needs
+# cgo against GTK and WebKitGTK, so arm64 would need an arm64 runner.
+# dist/flock-app-<version>-linux-x64.tar.gz with flock-app, its .desktop entry and icon, and its .sha256.
+linux-app-archive: linux-app
+	name=flock-app-$(VERSION)-linux-x64; \
+	rm -rf dist/$$name && mkdir -p dist/$$name && \
+	cp bin/flock-app linux/flock-app.desktop LICENSE NOTICE THIRD_PARTY_NOTICES dist/$$name/ && \
+	cp linux/app/icons/AppIcon.png dist/$$name/flock-app.png && \
+	tar -C dist/$$name -czf dist/$$name.tar.gz flock-app flock-app.desktop flock-app.png LICENSE NOTICE THIRD_PARTY_NOTICES && \
+	rm -r dist/$$name && \
+	cd dist && sha256sum $$name.tar.gz > $$name.tar.gz.sha256
 
 # The tray app's models and API client (windows/FlockKit) run on any OS; the app itself is built on Windows (windows/build.ps1).
 windows-test:

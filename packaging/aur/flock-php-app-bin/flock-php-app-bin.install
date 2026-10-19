@@ -1,0 +1,3 @@
+post_install() {
+  echo '==> Open Flock from your app launcher, or run flock-app. Set Flock up first if you haven'"'"'t: flock-php install'
+}
