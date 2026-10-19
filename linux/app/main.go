@@ -102,14 +102,14 @@ func main() {
 	menu.Add("Quit").OnClick(func(*application.Context) { f.app.Quit() })
 	tray.SetMenu(menu)
 
-	go f.watch(tray)
-
-	// Started at login (the autostart entry passes --background), it waits in the tray.
-	if !hasArg("--background") {
-		f.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+	f.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		// Not before: watch's InvokeSync needs the running app.
+		go f.watch(tray)
+		// Started at login (the autostart entry passes --background), it waits in the tray.
+		if !hasArg("--background") {
 			f.open(os.Args[1:])
-		})
-	}
+		}
+	})
 	if err := f.app.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -191,7 +191,13 @@ func title(name string) string {
 func (f *flockApp) show(name string) { f.showSection(name, "") }
 
 // showSection shows a window at a part of its page (its URL's fragment, e.g. a Settings pane).
+// Its callers (the tray, the menu, a second instance, app events) run off the main thread, so
+// f.windows is only touched there.
 func (f *flockApp) showSection(name, section string) {
+	application.InvokeSync(func() { f.present(name, section) })
+}
+
+func (f *flockApp) present(name, section string) {
 	created := f.windows[name] == nil
 	w := f.window(name)
 	if section != "" {
@@ -206,11 +212,13 @@ func (f *flockApp) showSection(name, section string) {
 }
 
 func (f *flockApp) toggle(name string) {
-	if w := f.window(name); w.IsVisible() {
-		w.Hide()
-	} else {
-		f.show(name)
-	}
+	application.InvokeSync(func() {
+		if w := f.window(name); w.IsVisible() {
+			w.Hide()
+		} else {
+			f.present(name, "")
+		}
+	})
 }
 
 // watch keeps the tray icon and tooltip in step with the daemon, like the apps' status poll.
@@ -297,8 +305,16 @@ func (f *flockApp) handler() http.Handler {
 		}
 		_ = f.app.Browser.OpenURL(u)
 	})
+	// A folder, or php.ini: only an existing absolute path, so the page can't hand xdg-open a URL,
+	// a flag or anything else that would get around /app/open's allowlist.
 	mux.HandleFunc("POST /app/folder", func(w http.ResponseWriter, r *http.Request) {
-		_ = exec.Command("xdg-open", r.URL.Query().Get("path")).Start()
+		p := filepath.Clean(r.URL.Query().Get("path"))
+		info, err := os.Stat(p)
+		if !filepath.IsAbs(p) || err != nil || !info.IsDir() && filepath.Ext(p) != ".ini" {
+			http.Error(w, "only folders open", http.StatusBadRequest)
+			return
+		}
+		_ = exec.Command("xdg-open", p).Start()
 	})
 	// A mail attachment, saved where the user picks.
 	mux.HandleFunc("POST /app/save-attachment", func(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +378,7 @@ func (f *flockApp) handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		application.InvokeSync(func() { f.show(name) })
+		f.show(name)
 	})
 	mux.HandleFunc("POST /app/restart", func(w http.ResponseWriter, _ *http.Request) {
 		if err := f.restart(); err != nil {
