@@ -1,11 +1,12 @@
 #!/bin/sh
 # Installs Flock on Linux (any distribution with glibc, x86-64 or arm64): downloads the flock CLI of
-# the newest release, checks it against its SHA-256 and runs `flock install`, which copies it to
-# ~/.flock/bin and sets Flock up (asks for your password once).
+# the newest release, checks it against its SHA-256 and runs `flock-php install`, which copies it to
+# ~/.config/Flock/bin and sets Flock up (asks for your password once). The CLI is flock-php on Linux:
+# util-linux owns flock(1).
 #
 #   curl -fsSL https://raw.githubusercontent.com/flock-php/flock/main/install.sh | sh
 #
-# FLOCK_VERSION=1.0.0 installs that release instead. Arguments go to `flock install`:
+# FLOCK_VERSION=1.0.0 installs that release instead. Arguments go to `flock-php install`:
 #
 #   curl -fsSL https://raw.githubusercontent.com/flock-php/flock/main/install.sh | sh -s -- --skip-privileged
 #
@@ -55,11 +56,11 @@ echo "Downloading Flock $version ($arch)…"
 curl -fsSL -o "$tmp/$name" "$url" || die "could not download $url"
 curl -fsSL -o "$tmp/$name.sha256" "$url.sha256" || die "could not download $url.sha256"
 (cd "$tmp" && sha256sum -c --status "$name.sha256") || die "$name doesn't match its SHA-256"
-tar -xzf "$tmp/$name" -C "$tmp" flock
+tar -xzf "$tmp/$name" -C "$tmp" flock-php
 
 # Piped into sh, stdin is this script: the password prompt and any question need the terminal.
 if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then
-  "$tmp/flock" install "$@" </dev/tty
+  "$tmp/flock-php" install "$@" </dev/tty
 else
-  "$tmp/flock" install "$@"
+  "$tmp/flock-php" install "$@"
 fi

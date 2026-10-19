@@ -36,14 +36,14 @@ windows:
 	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H windowsgui" -o dist/windows-amd64/flockd.exe ./cmd/flockd
 
 # The Linux CLI as release archives (install.sh and the AUR package download these):
-# dist/flock-<version>-linux-{x64,arm64}.tar.gz, each with its .sha256.
+# dist/flock-<version>-linux-{x64,arm64}.tar.gz with flock-php (util-linux owns flock), each with its .sha256.
 linux:
 	for a in x64:amd64 arm64:arm64; do \
 		name=flock-$(VERSION)-linux-$${a%%:*}; \
 		rm -rf dist/$$name && mkdir -p dist/$$name && \
-		CGO_ENABLED=0 GOOS=linux GOARCH=$${a##*:} go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$$name/flock ./cmd/flock && \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$${a##*:} go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$$name/flock-php ./cmd/flock && \
 		cp LICENSE NOTICE THIRD_PARTY_NOTICES dist/$$name/ && \
-		tar -C dist/$$name -czf dist/$$name.tar.gz flock LICENSE NOTICE THIRD_PARTY_NOTICES && \
+		tar -C dist/$$name -czf dist/$$name.tar.gz flock-php LICENSE NOTICE THIRD_PARTY_NOTICES && \
 		rm -r dist/$$name && \
 		(cd dist && sha256sum $$name.tar.gz > $$name.tar.gz.sha256) || exit 1; \
 	done
