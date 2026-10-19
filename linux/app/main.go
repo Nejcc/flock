@@ -198,8 +198,9 @@ func (f *flockApp) watch(tray *application.SystemTray) {
 	}
 }
 
-// flock is the installed CLI, which `flock install` copies into Flock's folder.
-func (f *flockApp) flock() string { return filepath.Join(f.root, "bin", "flock") }
+// flock is the installed CLI, which `flock-php install` copies into Flock's folder. On Linux it is
+// named flock-php: util-linux owns flock(1).
+func (f *flockApp) flock() string { return filepath.Join(f.root, "bin", "flock-php") }
 
 func (f *flockApp) restart() error {
 	out, err := exec.Command(f.flock(), "restart").CombinedOutput()
