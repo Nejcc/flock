@@ -37,10 +37,18 @@
 <script type="module">
 import { api, h, poll } from "./app.js";
 import { icon } from "./icons.js";
-import sites from "./settings/sites.js";
 import general from "./settings/general.js";
+import sites from "./settings/sites.js";
+import php from "./settings/php.js";
+import node from "./settings/node.js";
+import services from "./settings/services.js";
+import mail from "./settings/mail.js";
+import dumps from "./settings/dumps.js";
+import debuggerPane from "./settings/debugger.js";
+import ai from "./settings/ai.js";
+import about from "./settings/about.js";
 
-const panes = { general, sites };
+const panes = { general, sites, php, node, services, mail, dumps, debugger: debuggerPane, ai, about };
 const $ = (id) => document.getElementById(id);
 let current = location.hash.slice(1) in panes ? location.hash.slice(1) : "general";
 let data = null;
