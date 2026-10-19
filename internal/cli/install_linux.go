@@ -464,6 +464,13 @@ func newPrivilegedSetupCommand() *cobra.Command {
 					_ = os.Remove(dns.ResolvedFile())
 					_ = runTool("systemctl", "daemon-reload")
 				}
+				if data, _ := os.ReadFile(dns.NMFile()); string(data) == dns.NMContent {
+					_ = os.Remove(dns.NMFile())
+					// Install created them when NetworkManager wasn't there; with it, they aren't empty.
+					_ = os.Remove(dns.NMConfDir)
+					_ = os.Remove(filepath.Dir(dns.NMConfDir))
+					_ = runTool("systemctl", "try-reload-or-restart", "NetworkManager.service")
+				}
 				if anchor, update, err := caAnchor(); err == nil {
 					if _, err := os.Stat(anchor); err == nil {
 						_ = os.Remove(anchor)
@@ -478,6 +485,14 @@ func newPrivilegedSetupCommand() *cobra.Command {
 					return fmt.Errorf("--dns-port needs --tld")
 				}
 				removeLegacyDropIn(tld)
+				// NetworkManager must leave the link alone before the unit creates it again.
+				if err := os.MkdirAll(dns.NMConfDir, 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dns.NMFile(), []byte(dns.NMContent), 0o644); err != nil {
+					return err
+				}
+				_ = runTool("systemctl", "try-reload-or-restart", "NetworkManager.service") // fails without NetworkManager
 				if err := os.WriteFile(dns.ResolvedFile(), []byte(dns.ResolvedContent(tld, dnsPort)), 0o644); err != nil {
 					return err
 				}

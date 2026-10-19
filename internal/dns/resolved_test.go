@@ -8,9 +8,11 @@ import (
 )
 
 func TestResolvedProblem(t *testing.T) {
-	oldUnit, oldRuntime := UnitDir, ResolvedRuntimeDir
-	UnitDir, ResolvedRuntimeDir = t.TempDir(), filepath.Join(t.TempDir(), "missing")
-	t.Cleanup(func() { UnitDir, ResolvedRuntimeDir = oldUnit, oldRuntime })
+	oldUnit, oldRuntime, oldNM, oldUp := UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp
+	UnitDir, ResolvedRuntimeDir, NMConfDir = t.TempDir(), filepath.Join(t.TempDir(), "missing"), t.TempDir()
+	up := true
+	linkUp = func() bool { return up }
+	t.Cleanup(func() { UnitDir, ResolvedRuntimeDir, NMConfDir, linkUp = oldUnit, oldRuntime, oldNM, oldUp })
 
 	if p := ResolvedProblem("test", 53535); !strings.Contains(p, "systemd-resolved isn't running") || !strings.Contains(p, "port 53535") {
 		t.Fatalf("without systemd-resolved: %q", p)
@@ -24,9 +26,22 @@ func TestResolvedProblem(t *testing.T) {
 	if err := os.WriteFile(ResolvedFile(), []byte(ResolvedContent("test", 53535)), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Installs from before the NetworkManager drop-in run the setup again.
+	if p := ResolvedProblem("test", 53535); !strings.Contains(p, NMFile()) || !strings.Contains(p, "flock-php install") {
+		t.Fatalf("missing NetworkManager drop-in: %q", p)
+	}
+	if err := os.WriteFile(NMFile(), []byte(NMContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if p := ResolvedProblem("test", 53535); p != "" {
 		t.Fatalf("current unit: %q", p)
 	}
+	// Something took the link down or flushed its address after setup.
+	up = false
+	if p := ResolvedProblem("test", 53535); !strings.Contains(p, "flock0 is down") || !strings.Contains(p, "systemctl restart flock-dns.service") {
+		t.Fatalf("link without its address: %q", p)
+	}
+	up = true
 	if p := ResolvedProblem("test", 5300); !strings.Contains(p, "port 5300") || !strings.Contains(p, "flock-php install") {
 		t.Fatalf("other port: %q", p)
 	}
@@ -52,6 +67,9 @@ func TestResolvedContentRoutesTheTLDThroughFlocksLink(t *testing.T) {
 	// A literal % would be a systemd specifier.
 	if strings.Contains(unit, "%") || strings.Contains(unit, "[Resolve]") {
 		t.Errorf("unit:\n%s", unit)
+	}
+	if !strings.Contains(NMContent, "[keyfile]\nunmanaged-devices+=interface-name:flock0\n") {
+		t.Errorf("NetworkManager drop-in:\n%s", NMContent)
 	}
 	if got := LegacyDropIn("test"); got != filepath.Join(ResolvedDir, "flock-test.conf") {
 		t.Errorf("legacy drop-in: %q", got)
