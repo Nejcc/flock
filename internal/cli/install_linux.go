@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,9 +226,10 @@ const privilegedFirst = false
 // installHelperBinary: Linux has no hosts helper.
 func installHelperBinary(string) error { return nil }
 
-// ensurePrivileged checks what needs root (systemd-resolved's drop-in for the TLD, the CA in the
-// system's trust store, listening on ports below 1024) and does what is missing in one sudo run of
-// privileged-setup. Browsers keep their own trust stores, which the user can change.
+// ensurePrivileged checks what needs root (the unit that routes the TLD to Flock through
+// systemd-resolved, the CA in the system's trust store, listening on ports below 1024) and does
+// what is missing in one sudo run of privileged-setup. Browsers keep their own trust stores,
+// which the user can change.
 func ensurePrivileged(cmd *cobra.Command, s *state, bin string, ca *certs.CA) error {
 	tld, dnsPort := s.cfg.TLD, s.cfg.Ports.DNS
 	var args []string
@@ -247,10 +251,13 @@ func ensurePrivileged(cmd *cobra.Command, s *state, bin string, ca *certs.CA) er
 			return fmt.Errorf("privileged setup: %w", err)
 		}
 	}
-	if resolved {
-		cmd.Printf("✓ *.%s resolves via Flock\n", tld)
-	} else {
+	switch {
+	case !resolved:
 		cmd.Printf("! systemd-resolved isn't running: for *.%s, have your DNS resolver forward .%s to 127.0.0.1 port %d\n", tld, tld, dnsPort)
+	case resolvesToFlock(tld):
+		cmd.Printf("✓ *.%s resolves via Flock\n", tld)
+	default:
+		cmd.Printf("! *.%s doesn't resolve via Flock yet: see `systemctl status %s` and `flock-php status`\n", tld, dns.Unit)
 	}
 	cmd.Println("✓ Flock CA is trusted")
 	trustInBrowsers(cmd, ca.CertPath())
@@ -263,6 +270,23 @@ func ensurePrivileged(cmd *cobra.Command, s *state, bin string, ca *certs.CA) er
 		cmd.Printf("✓ the daemon may listen on ports %d and %d\n", s.cfg.Ports.HTTP, s.cfg.Ports.HTTPS)
 	}
 	return nil
+}
+
+// resolvesToFlock looks up fresh names under tld through the system resolver, as browsers and PHP
+// do, until one answers 127.0.0.1 (for up to ~10 s: the daemon may still be starting its DNS server).
+func resolvesToFlock(tld string) bool {
+	for range 10 {
+		nonce := make([]byte, 6)
+		_, _ = rand.Read(nonce)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		addrs, err := (&net.Resolver{PreferGo: false}).LookupHost(ctx, "flock-install-"+hex.EncodeToString(nonce)+"."+tld)
+		cancel()
+		if err == nil && slices.Contains(addrs, "127.0.0.1") {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 // runPrivileged runs a command as root: directly when flock already runs as root, else through
@@ -379,7 +403,7 @@ func untrustInBrowsers(caPath string) {
 	}
 }
 
-// tldPattern is a TLD privileged-setup writes into systemd-resolved's configuration.
+// tldPattern is a TLD privileged-setup writes into the unit that routes it to Flock.
 var tldPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,63}$`)
 
 // caAnchor is where the system's trust store takes another CA, and the command that rebuilds the
@@ -405,6 +429,16 @@ func runTool(name string, args ...string) error {
 	return nil
 }
 
+// removeLegacyDropIn removes the resolved.conf drop-in of installs before dns.Link, which put Flock
+// among resolved's global DNS servers.
+func removeLegacyDropIn(tld string) {
+	file := dns.LegacyDropIn(tld)
+	if data, _ := os.ReadFile(file); tld != "" && strings.HasPrefix(string(data), "# Managed by Flock") {
+		_ = os.Remove(file)
+		_ = runTool("systemctl", "try-restart", "systemd-resolved")
+	}
+}
+
 func newPrivilegedSetupCommand() *cobra.Command {
 	var tld, caPath, lowPortsBin string
 	var dnsPort int
@@ -424,9 +458,11 @@ func newPrivilegedSetupCommand() *cobra.Command {
 			}
 
 			if remove {
-				if data, _ := os.ReadFile(dns.ResolvedFile(tld)); tld != "" && strings.HasPrefix(string(data), "# Managed by Flock") {
-					_ = os.Remove(dns.ResolvedFile(tld))
-					_ = runTool("systemctl", "try-restart", "systemd-resolved")
+				removeLegacyDropIn(tld)
+				if data, _ := os.ReadFile(dns.ResolvedFile()); strings.HasPrefix(string(data), "# Managed by Flock") {
+					_ = runTool("systemctl", "disable", "--now", dns.Unit) // its ExecStop deletes the link
+					_ = os.Remove(dns.ResolvedFile())
+					_ = runTool("systemctl", "daemon-reload")
 				}
 				if anchor, update, err := caAnchor(); err == nil {
 					if _, err := os.Stat(anchor); err == nil {
@@ -441,14 +477,14 @@ func newPrivilegedSetupCommand() *cobra.Command {
 				if tld == "" {
 					return fmt.Errorf("--dns-port needs --tld")
 				}
-				if err := os.MkdirAll(dns.ResolvedDir, 0o755); err != nil {
+				removeLegacyDropIn(tld)
+				if err := os.WriteFile(dns.ResolvedFile(), []byte(dns.ResolvedContent(tld, dnsPort)), 0o644); err != nil {
 					return err
 				}
-				if err := os.WriteFile(dns.ResolvedFile(tld), []byte(dns.ResolvedContent(tld, dnsPort)), 0o644); err != nil {
-					return err
-				}
-				if err := runTool("systemctl", "try-restart", "systemd-resolved"); err != nil {
-					return err
+				for _, args := range [][]string{{"daemon-reload"}, {"enable", dns.Unit}, {"restart", dns.Unit}} {
+					if err := runTool("systemctl", args...); err != nil {
+						return err
+					}
 				}
 			}
 			if caPath != "" {
@@ -516,7 +552,7 @@ func newUninstallCommand() *cobra.Command {
 			if err := runPrivileged(cmd, self, "privileged-setup", "--remove", "--tld", s.cfg.TLD); err != nil {
 				return err
 			}
-			cmd.Printf("✓ removed %s and the Flock CA's trust\n", dns.ResolvedFile(s.cfg.TLD))
+			cmd.Printf("✓ removed %s and the Flock CA's trust\n", dns.ResolvedFile())
 
 			return finishUninstall(cmd, s.root, purge)
 		},

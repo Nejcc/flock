@@ -25,14 +25,14 @@ func init() {
 	windowsDNSPort = ln.LocalAddr().(*net.UDPAddr).Port
 	_ = ln.Close()
 
-	// The real /etc/resolver and systemd-resolved drop-in point at the real daemon, never at a
+	// The real /etc/resolver and systemd unit point at the real daemon, never at a
 	// test daemon's port.
 	dir, err := os.MkdirTemp("", "flock-resolver-")
 	if err != nil {
 		panic(err)
 	}
 	dns.ResolverDir = dir
-	dns.ResolvedDir = dir
+	dns.UnitDir = dir
 }
 
 func waitStatus(t *testing.T, client *api.Client, ok func(api.Status) bool) api.Status {

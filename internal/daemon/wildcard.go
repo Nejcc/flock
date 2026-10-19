@@ -38,7 +38,7 @@ func (d *daemon) recheckWildcard() {
 // checkWildcard looks up a random name under the TLD through the system resolver, the way browsers
 // and PHP do, and checks that the query reached Flock's DNS server. On Windows that only happens
 // when the NRPT rule from `flock install` is in effect, on macOS when /etc/resolver/<tld> is, on
-// Linux when systemd-resolved has the drop-in from `flock install` (or another resolver forwards
+// Linux when the unit from `flock install` gives systemd-resolved Flock's link (or another resolver forwards
 // the TLD); Group Policy, VPN clients and security software can override them without Flock
 // noticing otherwise.
 func (d *daemon) checkWildcard() {
@@ -116,5 +116,5 @@ func linuxWildcardProblem(tld string, port int) string {
 	if problem := dns.ResolvedProblem(tld, port); problem != "" {
 		return problem
 	}
-	return fmt.Sprintf("Linux doesn't send .%s lookups to Flock (a VPN or DNS filter may be overriding systemd-resolved, or /etc/resolv.conf doesn't use it)", tld)
+	return fmt.Sprintf("Linux doesn't send .%s lookups to Flock (see `systemctl status %s`; a VPN or DNS filter may be overriding systemd-resolved, or /etc/resolv.conf doesn't use it)", tld, dns.Unit)
 }
